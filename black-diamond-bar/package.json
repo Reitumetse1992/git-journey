@@ -1,0 +1,10 @@
+{
+  "name": "black-diamond-bar",
+  "version": "1.0.0",
+  "description": "Stock counting and sales records for Black Diamond Bar",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/core.test.js"
+  },
+  "license": "UNLICENSED"
+}
