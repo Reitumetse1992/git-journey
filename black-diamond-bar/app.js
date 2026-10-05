@@ -905,7 +905,7 @@
         </div>
       </div>
       <div class="grid kpis">
-        ${kpi('Sales', money(sold), plural(saleCount, 'sale') + ' by ' + plural(r.rows.filter((x) => x.sales).length, 'person'))}
+        ${kpi('Sales', money(sold), plural(saleCount, 'sale') + ' by ' + ((n) => n + (n === 1 ? ' person' : ' people'))(r.rows.filter((x) => x.sales).length))}
         ${kpi('Voids', r.voids.length, money(r.voidValue) + ' corrected')}
         ${kpi('Voided share', (sold + voidedValue > 0 ? Math.round((voidedValue / (sold + voidedValue)) * 1000) / 10 : 0) + '%', 'of sales value rung up')}
         ${kpi('Own sale voids', own, own ? 'manager voided their own sale' : 'none')}
