@@ -38,6 +38,7 @@
       deliveries: [],
       stockTakes: [],
       writeOffs: [],
+      orders: [], // purchase orders sent to suppliers
       batches: [], // expiry-dated lots: { id, productId, expiry, qty, source, ref, note, date }
       movements: [],
       seq: 1,
@@ -123,6 +124,7 @@
       sellPrice: round2(requireNumber(input.sellPrice ?? 0, 'Selling price')),
       reorderLevel: requireNumber(input.reorderLevel ?? 0, 'Reorder level', { integer: true }),
       parLevel: requireNumber(input.parLevel === '' || input.parLevel == null ? 0 : input.parLevel, 'Order up to', { integer: true }),
+      supplier: String(input.supplier || '').trim(),
       active: input.active !== false,
     };
   }
@@ -337,6 +339,7 @@
       const p = findProduct(state, l.productId);
       p.stock += l.qty;
       p.costPrice = l.unitCost;
+      if (!p.supplier && delivery.supplier) p.supplier = delivery.supplier; // learn who supplies it
       logMovement(state, { productId: p.id, type: 'receive', qty: l.qty, ref: delivery.id, date: delivery.date, note: delivery.supplier });
       if (l.expiry) {
         state.batches.push({ id: nextId(state, 'B'), productId: p.id, expiry: l.expiry, qty: l.qty, source: 'delivery', ref: delivery.id, note: delivery.supplier, date: delivery.date });
@@ -512,6 +515,7 @@
     const start = new Date(day + 'T00:00:00');
     start.setDate(start.getDate() - (lookbackDays - 1));
     const sold = salesReport(state, { from: localDay(start), to: day }).products;
+    const onOrder = onOrderQuantities(state);
     const rows = [];
     for (const p of state.products.filter((x) => x.active)) {
       const qtySold = (sold.find((s) => s.productId === p.id) || { qty: 0 }).qty;
@@ -521,9 +525,11 @@
       const runningOut = daysLeft !== null && daysLeft <= coverDays;
       if (!below && !runningOut) continue;
       const target = p.parLevel > 0 ? p.parLevel : Math.max(p.reorderLevel * 2, Math.ceil(perDay * coverDays), p.reorderLevel + 1);
-      const orderQty = Math.max(target - p.stock, 0);
+      const incoming = onOrder.get(p.id) || 0;
+      const orderQty = Math.max(target - p.stock - incoming, 0);
       rows.push({
         product: p,
+        onOrder: incoming,
         status: p.stock <= 0 ? 'out' : below ? 'low' : 'soon',
         perDay: round2(perDay),
         daysLeft,
@@ -535,6 +541,191 @@
     const rank = { out: 0, low: 1, soon: 2 };
     rows.sort((a, b) => rank[a.status] - rank[b.status] || (a.daysLeft ?? 1e9) - (b.daysLeft ?? 1e9) || a.product.name.localeCompare(b.product.name));
     return { rows, orderValue: round2(rows.reduce((s, r) => s + r.orderValue, 0)), lookbackDays, coverDays };
+  }
+
+  // ---------- supplier orders ----------
+
+  /** Units ordered from suppliers but not delivered yet, per product. */
+  function onOrderQuantities(state) {
+    const out = new Map();
+    for (const o of state.orders || []) {
+      if (o.status !== 'ordered' && o.status !== 'part') continue;
+      for (const l of o.lines) out.set(l.productId, (out.get(l.productId) || 0) + Math.max(l.qty - l.received, 0));
+    }
+    return out;
+  }
+
+  /**
+   * Orders the system thinks should be placed now: the restock list, less
+   * anything already on order, grouped into one order per supplier.
+   */
+  function suggestedOrders(state, options) {
+    const groups = new Map();
+    for (const r of restockList(state, options).rows) {
+      if (r.orderQty <= 0) continue;
+      const supplier = r.product.supplier || '';
+      if (!groups.has(supplier)) groups.set(supplier, { supplier, lines: [], total: 0 });
+      const g = groups.get(supplier);
+      g.lines.push({ productId: r.product.id, name: r.product.name, unit: r.product.unit, qty: r.orderQty, unitCost: r.product.costPrice, lineCost: r.orderValue, status: r.status });
+      g.total = round2(g.total + r.orderValue);
+    }
+    return [...groups.values()].sort((a, b) => (a.supplier === '') - (b.supplier === '') || a.supplier.localeCompare(b.supplier));
+  }
+
+  function placeOrder(state, { supplier, items, staff, note, date }) {
+    const name = String(supplier || '').trim();
+    if (!name) throw new Error('Choose a supplier for this order');
+    const lines = (items || [])
+      .map((it) => ({ p: findProduct(state, it.productId), qty: requireNumber(it.qty || 0, 'Quantity', { integer: true }) }))
+      .filter((x) => x.qty > 0)
+      .map(({ p, qty }) => ({ productId: p.id, name: p.name, unit: p.unit, qty, unitCost: p.costPrice, lineCost: round2(qty * p.costPrice), received: 0 }));
+    if (!lines.length) throw new Error('An order needs at least one item');
+    const order = {
+      id: nextId(state, 'O'),
+      date: date || new Date().toISOString(),
+      supplier: name,
+      staff: staff || '',
+      note: String(note || '').trim(),
+      status: 'ordered', // ordered | part | received | cancelled
+      lines,
+      total: round2(lines.reduce((n, l) => n + l.lineCost, 0)),
+      deliveries: [],
+    };
+    for (const l of lines) {
+      const p = findProduct(state, l.productId);
+      if (!p.supplier) p.supplier = name;
+    }
+    state.orders.push(order);
+    return order;
+  }
+
+  function findOrder(state, id) {
+    const o = (state.orders || []).find((x) => x.id === id);
+    if (!o) throw new Error('Order not found: ' + id);
+    return o;
+  }
+
+  /**
+   * Books in a delivery against an order. `lines` gives what actually arrived
+   * ([{ productId, qty, unitCost?, expiry? }]); leave it out to receive
+   * everything still outstanding at the ordered quantities.
+   */
+  function receiveOrder(state, orderId, { lines, invoice, staff, date } = {}) {
+    const order = findOrder(state, orderId);
+    if (order.status !== 'ordered' && order.status !== 'part') throw new Error('Order ' + order.id + ' is already ' + order.status);
+    const arriving = lines || order.lines.map((l) => ({ productId: l.productId, qty: l.qty - l.received }));
+    const items = arriving.filter((a) => Number(a.qty) > 0);
+    for (const a of items) {
+      if (!order.lines.some((l) => l.productId === a.productId)) throw new Error('That product is not on order ' + order.id);
+    }
+    if (!items.length) throw new Error('Enter how many of each item arrived');
+    const delivery = receiveStock(state, { items, supplier: order.supplier, invoice: invoice || order.id, staff, date });
+    delivery.orderId = order.id;
+    for (const dl of delivery.lines) order.lines.find((l) => l.productId === dl.productId).received += dl.qty;
+    order.deliveries.push(delivery.id);
+    order.status = order.lines.every((l) => l.received >= l.qty) ? 'received' : 'part';
+    if (order.status === 'received') order.receivedAt = delivery.date;
+    return { order, delivery };
+  }
+
+  /** Stops waiting for the rest of an order (cancels it if nothing arrived). */
+  function closeOrder(state, orderId, reason) {
+    const order = findOrder(state, orderId);
+    if (order.status !== 'ordered' && order.status !== 'part') throw new Error('Order ' + order.id + ' is already ' + order.status);
+    order.status = order.lines.some((l) => l.received > 0) ? 'received' : 'cancelled';
+    order.closedReason = String(reason || '').trim();
+    order.closedAt = new Date().toISOString();
+    return order;
+  }
+
+  /** Plain-text order to send to the supplier by WhatsApp, SMS or email. */
+  function orderMessage(state, order) {
+    const when = new Date(order.date).toLocaleDateString('en-ZA', { day: 'numeric', month: 'long', year: 'numeric' });
+    const items = order.lines.map((l) => '- ' + l.qty + ' x ' + l.name + (l.unit && l.unit !== 'each' ? ' (' + l.unit + ')' : ''));
+    const parts = ['Order ' + order.id + ' from ' + state.settings.barName + '\n' + when, items.join('\n')];
+    if (order.note) parts.push(order.note);
+    parts.push('Please confirm availability and delivery date. Thank you.');
+    return parts.join('\n\n');
+  }
+
+  // ---------- import ----------
+
+  const IMPORT_COLUMNS = {
+    name: ['name', 'product', 'item', 'description'],
+    category: ['category', 'type', 'group'],
+    unit: ['unit', 'size', 'measure'],
+    costPrice: ['cost', 'cost price', 'buy price', 'buying price', 'unit cost'],
+    sellPrice: ['price', 'selling price', 'sell price', 'sale price', 'retail'],
+    stock: ['stock', 'qty', 'quantity', 'on hand', 'opening stock', 'count'],
+    reorderLevel: ['reorder', 'reorder level', 'reorder at', 'min', 'minimum'],
+    parLevel: ['order up to', 'par', 'par level', 'max', 'maximum'],
+    supplier: ['supplier', 'vendor', 'from'],
+  };
+  const IMPORT_DEFAULT_ORDER = ['name', 'category', 'unit', 'costPrice', 'sellPrice', 'stock', 'reorderLevel', 'supplier'];
+
+  /** "R 1 234,50" -> "1234.50"; also accepts 13.50 and 1,200. */
+  function toNumberText(v) {
+    let t = String(v).trim();
+    if (!t.includes('.') && /,\d{1,2}$/.test(t)) t = t.replace(/,(\d{1,2})$/, '.$1');
+    return t.replace(/[^0-9.\-]/g, '');
+  }
+
+  function parseTable(text) {
+    const rows = [];
+    for (const raw of String(text || '').replace(/\r/g, '').split('\n')) {
+      if (!raw.trim()) continue;
+      const delim = raw.includes('\t') ? '\t' : raw.includes(';') && !raw.includes(',') ? ';' : ',';
+      const cells = [];
+      let cur = '';
+      let quoted = false;
+      for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i];
+        if (quoted) {
+          if (ch === '"' && raw[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') quoted = false; else cur += ch;
+        } else if (ch === '"') quoted = true;
+        else if (ch === delim) { cells.push(cur.trim()); cur = ''; } else cur += ch;
+      }
+      cells.push(cur.trim());
+      rows.push(cells);
+    }
+    return rows;
+  }
+
+  /**
+   * Adds or updates products from a spreadsheet (pasted from Excel / Google
+   * Sheets, or a CSV file). Matches existing products by name. Stock is only
+   * set for new products; existing stock changes through deliveries and counts.
+   */
+  function importProducts(state, text) {
+    const rows = parseTable(text);
+    if (!rows.length) throw new Error('Nothing to import — paste rows from your spreadsheet first');
+    const norm = (h) => h.toLowerCase().replace(/[^a-z ]/g, '').replace(/\s+/g, ' ').trim();
+    const headerMap = rows[0].map((h) => Object.keys(IMPORT_COLUMNS).find((k) => IMPORT_COLUMNS[k].includes(norm(h))) || null);
+    const hasHeader = headerMap.includes('name');
+    const columns = hasHeader ? headerMap : IMPORT_DEFAULT_ORDER;
+    const result = { added: 0, updated: 0, skipped: [] };
+    rows.slice(hasHeader ? 1 : 0).forEach((cells, i) => {
+      const line = i + (hasHeader ? 2 : 1);
+      const rec = {};
+      columns.forEach((key, c) => {
+        if (key && cells[c] !== undefined && cells[c] !== '') rec[key] = key === 'name' || key === 'category' || key === 'unit' || key === 'supplier' ? cells[c] : toNumberText(cells[c]);
+      });
+      try {
+        if (!rec.name) throw new Error('no product name');
+        const existing = state.products.find((p) => p.name.toLowerCase() === rec.name.trim().toLowerCase());
+        if (existing) {
+          const { stock, ...changes } = rec;
+          updateProduct(state, existing.id, { ...changes, active: true });
+          result.updated += 1;
+        } else {
+          addProduct(state, rec);
+          result.added += 1;
+        }
+      } catch (e) {
+        result.skipped.push({ line, name: rec.name || '', reason: e.message });
+      }
+    });
+    return result;
   }
 
   // ---------- reporting ----------
@@ -637,6 +828,7 @@
       deliveries: data.deliveries || [],
       stockTakes: data.stockTakes || [],
       writeOffs: data.writeOffs || [],
+      orders: data.orders || [],
       batches: data.batches || [],
       movements: data.movements || [],
       seq: data.seq || 1,
@@ -670,6 +862,13 @@
     removeExpiryBatch,
     expiryReport,
     restockList,
+    suggestedOrders,
+    placeOrder,
+    receiveOrder,
+    closeOrder,
+    orderMessage,
+    onOrderQuantities,
+    importProducts,
     salesReport,
     stockSummary,
     toCSV,

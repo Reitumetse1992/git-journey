@@ -268,3 +268,109 @@ test('old backups without managers get one so voids still work', () => {
   delete old.settings.managers;
   assert.deepEqual(core.loadState(JSON.stringify(old)).settings.managers, ['Thabo']);
 });
+
+test('suggested orders group by supplier and skip what is already on order', () => {
+  const s = core.createState();
+  const lager = core.addProduct(s, { name: 'Castle Lager', costPrice: 13.5, sellPrice: 28, stock: 10, reorderLevel: 24, parLevel: 72, supplier: 'SAB' });
+  const lite = core.addProduct(s, { name: 'Castle Lite', costPrice: 14, sellPrice: 30, stock: 0, reorderLevel: 24, parLevel: 48, supplier: 'SAB' });
+  core.addProduct(s, { name: 'Savanna', costPrice: 17.5, sellPrice: 35, stock: 5, reorderLevel: 12, parLevel: 24, supplier: 'Distell' });
+  core.addProduct(s, { name: 'Peanuts', costPrice: 7, sellPrice: 18, stock: 2, reorderLevel: 6, parLevel: 20 });
+  let groups = core.suggestedOrders(s);
+  assert.deepEqual(groups.map((g) => g.supplier), ['Distell', 'SAB', ''], 'products without a supplier come last');
+  const sab = groups.find((g) => g.supplier === 'SAB');
+  assert.deepEqual(sab.lines.map((l) => [l.name, l.qty]), [['Castle Lite', 48], ['Castle Lager', 62]]);
+  assert.equal(sab.total, 48 * 14 + 62 * 13.5);
+
+  const order = core.placeOrder(s, { supplier: 'SAB', items: sab.lines, staff: 'Lerato' });
+  assert.equal(order.status, 'ordered');
+  groups = core.suggestedOrders(s);
+  assert.ok(!groups.some((g) => g.supplier === 'SAB'), 'nothing more to order from SAB while the order is open');
+  const row = core.restockList(s).rows.find((r) => r.product.id === lite.id);
+  assert.equal(row.onOrder, 48);
+  assert.equal(row.orderQty, 0);
+  assert.equal(lager.stock, 10, 'ordering does not change stock');
+});
+
+test('receiving an order books in stock, costs and expiry in one step', () => {
+  const s = core.createState();
+  const lager = core.addProduct(s, { name: 'Castle Lager', costPrice: 13.5, sellPrice: 28, stock: 10, reorderLevel: 24, supplier: 'SAB' });
+  const lite = core.addProduct(s, { name: 'Castle Lite', costPrice: 14, sellPrice: 30, stock: 0, reorderLevel: 24, supplier: 'SAB' });
+  const order = core.placeOrder(s, { supplier: 'SAB', items: [{ productId: lager.id, qty: 48 }, { productId: lite.id, qty: 24 }] });
+
+  // Short delivery: all the lager, half the Lite, with a new price and a best-before date.
+  const first = core.receiveOrder(s, order.id, { invoice: 'INV-1', lines: [
+    { productId: lager.id, qty: 48, unitCost: 14, expiry: '2027-03-01' },
+    { productId: lite.id, qty: 12 },
+  ] });
+  assert.equal(first.order.status, 'part');
+  assert.equal(lager.stock, 58);
+  assert.equal(lager.costPrice, 14);
+  assert.equal(lite.stock, 12);
+  assert.equal(first.delivery.supplier, 'SAB');
+  assert.equal(first.delivery.orderId, order.id);
+  assert.equal(s.batches.length, 1);
+  assert.equal(core.onOrderQuantities(s).get(lite.id), 12);
+
+  // Receive the rest with no details: everything outstanding arrives.
+  const second = core.receiveOrder(s, order.id);
+  assert.equal(second.order.status, 'received');
+  assert.equal(lite.stock, 24);
+  assert.equal(order.deliveries.length, 2);
+  assert.throws(() => core.receiveOrder(s, order.id), /already received/);
+});
+
+test('orders can be closed short or cancelled, and produce a supplier message', () => {
+  const s = core.createState();
+  s.settings.barName = 'Test Bar';
+  const a = core.addProduct(s, { name: 'Red Bull 250ml', unit: 'can', costPrice: 18, sellPrice: 40 });
+  const o1 = core.placeOrder(s, { supplier: 'CCBSA', items: [{ productId: a.id, qty: 24 }], note: 'Deliver before Friday' });
+  const msg = core.orderMessage(s, o1);
+  assert.match(msg, /^Order O\d+ from Test Bar/);
+  assert.match(msg, /- 24 x Red Bull 250ml \(can\)/);
+  assert.match(msg, /Deliver before Friday/);
+  assert.doesNotMatch(msg, /\n\n\n/, 'no double blank lines');
+  assert.equal(core.closeOrder(s, o1.id, 'Out of stock at supplier').status, 'cancelled');
+  assert.equal(a.supplier, 'CCBSA', 'supplier remembered from the order');
+  const o2 = core.placeOrder(s, { supplier: 'CCBSA', items: [{ productId: a.id, qty: 24 }] });
+  core.receiveOrder(s, o2.id, { lines: [{ productId: a.id, qty: 20 }] });
+  assert.equal(core.closeOrder(s, o2.id).status, 'received');
+  assert.equal(core.onOrderQuantities(s).size, 0);
+  assert.throws(() => core.placeOrder(s, { supplier: '', items: [{ productId: a.id, qty: 1 }] }), /supplier/);
+  assert.throws(() => core.placeOrder(s, { supplier: 'X', items: [{ productId: a.id, qty: 0 }] }), /at least one/);
+});
+
+test('deliveries teach products their supplier', () => {
+  const s = core.createState();
+  const p = core.addProduct(s, { name: 'Jameson', costPrice: 9.5, sellPrice: 30 });
+  core.receiveStock(s, { items: [{ productId: p.id, qty: 6 }], supplier: 'Makro' });
+  assert.equal(p.supplier, 'Makro');
+});
+
+test('products import from a spreadsheet paste or CSV', () => {
+  const s = core.createState();
+  const existing = core.addProduct(s, { name: 'Castle Lager 340ml', costPrice: 12, sellPrice: 25, stock: 30 });
+  const pasted = [
+    'Product\tCategory\tUnit\tCost price\tSelling price\tStock\tReorder level\tSupplier',
+    'Castle Lager 340ml\tBeer\tbottle\tR 13,50\tR 28,00\t999\t24\tSAB',
+    'Hunters Dry 330ml\tCider\tbottle\t16\t32\t36\t12\tDistell',
+    '\tBeer\tbottle\t1\t2\t3\t4\tSAB',
+    'Bad Price\tBeer\tbottle\tabc\t-5\t1\t1\tSAB',
+  ].join('\n');
+  const r = core.importProducts(s, pasted);
+  assert.equal(r.added, 1);
+  assert.equal(r.updated, 1);
+  assert.equal(r.skipped.length, 2);
+  assert.equal(r.skipped[0].line, 4);
+  assert.equal(existing.costPrice, 13.5);
+  assert.equal(existing.sellPrice, 28);
+  assert.equal(existing.stock, 30, 'stock of an existing product is not overwritten');
+  assert.equal(existing.supplier, 'SAB');
+  const hunters = s.products.find((p) => p.name === 'Hunters Dry 330ml');
+  assert.deepEqual([hunters.stock, hunters.reorderLevel, hunters.supplier, hunters.category], [36, 12, 'Distell', 'Cider']);
+
+  // No header row: columns in the standard order, comma separated with quotes.
+  const r2 = core.importProducts(s, '"Jägermeister (shot)",Shooters,shot,9,30,50,15,"Makro, Midrand"');
+  assert.equal(r2.added, 1);
+  assert.equal(s.products.at(-1).supplier, 'Makro, Midrand');
+  assert.throws(() => core.importProducts(s, '   '), /Nothing to import/);
+});

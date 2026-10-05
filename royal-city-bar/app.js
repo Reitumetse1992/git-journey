@@ -86,7 +86,7 @@
   }
 
   let modalSubmit = null;
-  function openModal({ title, body, okText = 'Save', onSubmit, onOpen, danger = false }) {
+  function openModal({ title, body, okText = 'Save', onSubmit, onOpen, danger = false, wide = false }) {
     $('#modalTitle').textContent = title;
     $('#modalBody').innerHTML = body;
     $('#modalError').textContent = '';
@@ -94,6 +94,7 @@
     ok.textContent = okText;
     ok.className = 'btn ' + (danger ? 'danger' : 'primary');
     modalSubmit = onSubmit;
+    $('#modal').classList.toggle('wide', wide);
     $('#modal').showModal();
     if (onOpen) onOpen($('#modalBody'));
     const first = $('#modalBody input, #modalBody select, #modalBody textarea');
@@ -144,7 +145,7 @@
     document.title = state.settings.barName + ' · Stock & Sales';
     renderStaff();
     $$('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
-    const alerts = C.restockList(state).rows.length + C.expiryReport(state).rows.filter((r) => r.status !== 'soon').length;
+    const alerts = C.restockList(state).rows.filter((r) => r.orderQty > 0).length + C.expiryReport(state).rows.filter((r) => r.status !== 'soon').length;
     $('#watchBadge').textContent = alerts || '';
     const views = { dashboard, sell, products, stock, watch, sales, staff: staffView, reports, settings };
     // A fresh container each render so view-level event listeners never pile up.
@@ -163,6 +164,8 @@
     const s = C.stockSummary(state);
     const recent = state.sales.slice(-8).reverse();
     const rs = C.restockList(state);
+    const toOrder = rs.rows.filter((r) => r.orderQty > 0).length;
+    const openOrders = state.orders.filter((o) => o.status === 'ordered' || o.status === 'part').length;
     const ex = C.expiryReport(state);
     const wo = C.writeOffReport(state, { from: daysAgo(6), to: today() });
     el.innerHTML = `
@@ -180,11 +183,11 @@
         <div class="card">
           <div class="row" style="justify-content:space-between;margin-bottom:10px"><h3 style="margin:0">Stock watch</h3><button class="btn small no-print" data-go="watch">Open</button></div>
           <div class="watch-mini">
-            <button data-watch="restock"><b class="${rs.rows.length ? 'warn-t' : ''}">${rs.rows.length}</b><span>to restock</span></button>
+            <button data-watch="restock"><b class="${toOrder ? 'warn-t' : ''}">${toOrder}</b><span>to order${openOrders ? ` · ${openOrders} on order` : ''}</span></button>
             <button data-watch="expiry"><b class="${ex.expired.length ? 'neg' : ex.rows.length ? 'warn-t' : ''}">${ex.rows.length}</b><span>expiring${ex.expired.length ? ` (${ex.expired.length} expired)` : ''}</span></button>
             <button data-watch="damaged"><b>${money(wo.value)}</b><span>damaged this week</span></button>
           </div>
-          ${rs.rows.length ? `<div class="table-wrap"><table><thead><tr><th>Needs stock</th><th class="num">In stock</th><th class="num">Order</th><th></th></tr></thead><tbody>
+          ${rs.rows.length ? `<div class="table-wrap"><table><thead><tr><th>Needs stock</th><th class="num">In stock</th><th class="num">To order</th><th></th></tr></thead><tbody>
             ${rs.rows.slice(0, 6).map((r) => `<tr><td>${esc(r.product.name)}</td><td class="num">${r.product.stock}</td><td class="num">${r.orderQty}</td><td>${restockPill(r)}</td></tr>`).join('')}
           </tbody></table></div>` : '<p class="empty">Nothing needs restocking.</p>'}
         </div>
@@ -311,16 +314,17 @@
           <input type="search" id="prodSearch" placeholder="Search…" value="${esc(productSearch)}">
           <label class="row muted" style="font-size:13px"><input type="checkbox" id="showArchived" ${showArchived ? 'checked' : ''}> Show archived</label>
           <button class="btn" id="exportProducts">Export CSV</button>
+          <button class="btn" id="importProducts">Import from spreadsheet</button>
           <button class="btn primary" id="addProduct">Add product</button>
         </div>
       </div>
       <div class="card table-wrap">
         ${list.length ? `<table>
-          <thead><tr><th>Product</th><th>Category</th><th>Unit</th><th class="num">Cost</th><th class="num">Price</th><th class="num">Margin</th><th class="num">Stock</th><th class="num">Reorder</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Product</th><th>Category</th><th>Unit</th><th>Supplier</th><th class="num">Cost</th><th class="num">Price</th><th class="num">Margin</th><th class="num">Stock</th><th class="num">Reorder</th><th>Status</th><th></th></tr></thead>
           <tbody>${list.map((p) => {
             const margin = p.sellPrice > 0 ? Math.round(((p.sellPrice - p.costPrice) / p.sellPrice) * 100) : 0;
             return `<tr class="${p.active ? '' : 'dim'}">
-              <td><b>${esc(p.name)}</b></td><td>${esc(p.category)}</td><td>${esc(p.unit)}</td>
+              <td><b>${esc(p.name)}</b></td><td>${esc(p.category)}</td><td>${esc(p.unit)}</td><td>${p.supplier ? esc(p.supplier) : '<span class="muted">—</span>'}</td>
               <td class="num">${money(p.costPrice)}</td><td class="num">${money(p.sellPrice)}</td>
               <td class="num ${margin < 0 ? 'neg' : ''}">${margin}%</td>
               <td class="num"><b>${p.stock}</b></td><td class="num">${p.reorderLevel}</td>
@@ -338,6 +342,7 @@
     search.addEventListener('input', () => { productSearch = search.value; render(); const s = $('#prodSearch'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); });
     $('#showArchived', el).addEventListener('change', (e) => { showArchived = e.target.checked; render(); });
     $('#addProduct', el).addEventListener('click', () => productForm());
+    $('#importProducts', el).addEventListener('click', importForm);
     $('#exportProducts', el).addEventListener('click', () => {
       download('products-' + today() + '.csv', C.toCSV(
         ['Name', 'Category', 'Unit', 'Cost price', 'Selling price', 'Stock', 'Reorder level', 'Stock value (cost)', 'Active'],
@@ -374,6 +379,7 @@
         ${p ? `<label class="field">Current stock<input value="${p.stock}" disabled></label>` : '<label class="field">Opening stock<input name="stock" type="number" step="1" min="0" value="0"></label>'}
         <label class="field">Reorder when at or below<input name="reorderLevel" type="number" step="1" min="0" value="${p?.reorderLevel ?? 6}"></label>
         <label class="field">Order up to (optional)<input name="parLevel" type="number" step="1" min="0" value="${p?.parLevel || ''}" placeholder="Auto"></label>
+        <label class="field full">Supplier<input name="supplier" list="supplierList" value="${esc(p?.supplier || '')}" placeholder="e.g. SAB, Distell, Makro">${supplierDatalist()}</label>
       </div>`,
       onSubmit: (f) => {
         const data = Object.fromEntries(f);
@@ -400,13 +406,15 @@
         <div class="row no-print">
           <button class="btn" id="damage">Record damage</button>
           <button class="btn" id="adjust">Adjust</button>
-          <button class="btn primary" id="receive">Receive delivery</button>
+          ${openOrderCount() ? `<button class="btn primary" id="receiveOrder">Receive order (${openOrderCount()})</button>` : ''}
+          <button class="btn ${openOrderCount() ? '' : 'primary'}" id="receive">${openOrderCount() ? 'Delivery without order' : 'Receive delivery'}</button>
         </div>
       </div>
       <div class="cat-bar no-print">${tabs.map(([k, l]) => `<button data-stab="${k}" class="${k === stockTab ? 'active' : ''}">${l}</button>`).join('')}</div>
       <div id="stockBody"></div>`;
     $$('[data-stab]', el).forEach((b) => b.addEventListener('click', () => { stockTab = b.dataset.stab; render(); }));
     $('#receive', el).addEventListener('click', deliveryForm);
+    $('#receiveOrder', el)?.addEventListener('click', () => { view = 'watch'; watchTab = 'orders'; render(); });
     $('#adjust', el).addEventListener('click', adjustForm);
     $('#damage', el).addEventListener('click', () => damageForm());
     const body = $('#stockBody', el);
@@ -617,22 +625,39 @@
     return `in ${plural(n, 'day')}`;
   }
 
+  function openOrderCount() {
+    return state.orders.filter((o) => o.status === 'ordered' || o.status === 'part').length;
+  }
+
+  function knownSuppliers() {
+    return [...new Set([...state.products.map((p) => p.supplier), ...state.deliveries.map((d) => d.supplier), ...state.orders.map((o) => o.supplier)].filter(Boolean))].sort();
+  }
+
+  function supplierDatalist() {
+    return `<datalist id="supplierList">${knownSuppliers().map((n) => `<option value="${esc(n)}">`).join('')}</datalist>`;
+  }
+
   function watch(el) {
     const rs = C.restockList(state);
+    const suggested = C.suggestedOrders(state);
+    const toOrder = suggested.reduce((n, g) => n + g.lines.length, 0);
+    const suggestedValue = C.round2(suggested.reduce((n, g) => n + g.total, 0));
+    const open = state.orders.filter((o) => o.status === 'ordered' || o.status === 'part');
     const ex = C.expiryReport(state);
     const wo = C.writeOffReport(state, { from: woFrom, to: woTo });
-    const tabs = [['restock', 'Needs restocking', rs.rows.length], ['damaged', 'Damaged stock', wo.list.length], ['expiry', 'Expiring soon', ex.rows.length]];
+    if (watchTab === 'restock' && !toOrder && open.length) watchTab = 'orders';
+    const tabs = [['restock', 'To order', toOrder], ['orders', 'On order', open.length], ['damaged', 'Damaged stock', wo.list.length], ['expiry', 'Expiring soon', ex.rows.length]];
     el.innerHTML = `
       <div class="page-head">
-        <div><h1>Stock Watch</h1><p class="lead">What to order, what was damaged, and what is about to expire.</p></div>
+        <div><h1>Stock Watch</h1><p class="lead">Orders worked out from your sales, deliveries waiting to arrive, damage and expiry.</p></div>
         <div class="row no-print">
           <button class="btn" id="wExpiry">Add expiry date</button>
           <button class="btn primary" id="wDamage">Record damage</button>
         </div>
       </div>
       <div class="grid kpis">
-        ${kpi('To restock', plural(rs.rows.length, 'item'), 'Order value ' + money(rs.orderValue))}
-        ${kpi('Out of stock', rs.rows.filter((r) => r.status === 'out').length, 'items with none left')}
+        ${kpi('To order', plural(toOrder, 'item'), suggested.length ? plural(suggested.length, 'supplier') + ' · ' + money(suggestedValue) : 'nothing needed')}
+        ${kpi('On order', plural(open.length, 'order'), money(open.reduce((n, o) => n + o.lines.reduce((m, l) => m + Math.max(l.qty - l.received, 0) * l.unitCost, 0), 0)) + ' still to arrive')}
         ${kpi('Damaged', money(wo.value), wo.units + ' units · ' + (woFrom === daysAgo(29) && woTo === today() ? 'last 30 days' : woFrom + ' → ' + woTo))}
         ${kpi('Expiring', ex.units + ' units', money(ex.value) + ' · ' + (ex.expired.length ? ex.expired.length + ' already expired' : 'within ' + ex.withinDays + ' days'))}
       </div>
@@ -642,32 +667,180 @@
     $('#wDamage', el).addEventListener('click', () => damageForm());
     $('#wExpiry', el).addEventListener('click', () => expiryForm());
     const body = $('#watchBody', el);
-    ({ restock: () => watchRestock(body, rs), damaged: () => watchDamaged(body, wo), expiry: () => watchExpiry(body, ex) })[watchTab]();
+    ({ restock: () => watchRestock(body, rs, suggested), orders: () => watchOrders(body), damaged: () => watchDamaged(body, wo), expiry: () => watchExpiry(body, ex) })[watchTab]();
   }
 
-  function watchRestock(el, rs) {
-    el.innerHTML = `<div class="card">
-      <p class="muted" style="margin-top:0">Listed when stock is at or below its reorder level, or when the last ${rs.lookbackDays} days of sales say it will run out within ${rs.coverDays} days.
-        <b>Order</b> tops up to the product's “order up to” level (set it under Products), or to a week of sales if none is set.</p>
-      ${rs.rows.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>Product</th><th>Category</th><th class="num">In stock</th><th class="num">Reorder at</th><th class="num">Sells / day</th><th class="num">Lasts</th><th class="num">Order</th><th class="num">Order cost</th><th>Status</th></tr></thead>
-        <tbody>${rs.rows.map((r) => `<tr>
-          <td><b>${esc(r.product.name)}</b> <span class="muted">· ${esc(r.product.unit)}</span></td><td>${esc(r.product.category)}</td>
-          <td class="num">${r.product.stock}</td><td class="num">${r.product.reorderLevel}</td>
-          <td class="num">${r.perDay || '—'}</td><td class="num">${r.daysLeft === null ? '—' : plural(r.daysLeft, 'day')}</td>
-          <td class="num"><b>${r.orderQty}</b></td><td class="num">${money(r.orderValue)}</td><td>${restockPill(r)}</td></tr>`).join('')}
-          <tr><td colspan="7"><b>Total order</b></td><td class="num"><b>${money(rs.orderValue)}</b></td><td></td></tr>
-        </tbody></table></div>
-        <div class="row no-print" style="margin-top:12px"><button class="btn" id="rsExport">Download order list (CSV)</button><button class="btn" id="rsPrint">Print</button></div>`
-        : '<p class="empty">Nothing needs restocking right now.</p>'}
-    </div>`;
-    if (!rs.rows.length) return;
-    $('#rsPrint', el).addEventListener('click', () => window.print());
-    $('#rsExport', el).addEventListener('click', () => download(`order-list-${today()}.csv`, C.toCSV(
-      ['Product', 'Category', 'Unit', 'In stock', 'Reorder level', 'Sells per day', 'Order qty', 'Unit cost', 'Order cost', 'Status'],
-      rs.rows.map((r) => [r.product.name, r.product.category, r.product.unit, r.product.stock, r.product.reorderLevel, r.perDay, r.orderQty, r.product.costPrice, r.orderValue,
-        { out: 'Out of stock', low: 'Below reorder', soon: 'Runs out soon' }[r.status]]),
-    )));
+  function watchRestock(el, rs, suggested) {
+    const statusOf = Object.fromEntries(rs.rows.map((r) => [r.product.id, r]));
+    el.innerHTML = `
+      <p class="muted" style="margin-top:0">These orders update by themselves as you sell. An item appears when it is at or below its reorder level, or when the last ${rs.lookbackDays} days of sales say it will run out within ${rs.coverDays} days.
+        Quantities top up to each product's “order up to” level (or about a week of sales), minus anything already on order. Check the numbers, then place the order.</p>
+      ${suggested.length ? `<div class="grid order-grid">${suggested.map((g, gi) => `
+        <form class="card order-card" data-group="${gi}">
+          <div class="row" style="justify-content:space-between;gap:12px">
+            ${g.supplier ? `<h2 style="margin:0">${esc(g.supplier)}</h2><input type="hidden" name="supplier" value="${esc(g.supplier)}">`
+              : `<label class="field" style="flex:1;min-width:200px">Supplier for these items<input name="supplier" list="supplierList" required placeholder="Who do you buy these from?">${supplierDatalist()}</label>`}
+            <span class="muted">${plural(g.lines.length, 'item')}</span>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Product</th><th class="num">In stock</th><th class="num">On order</th><th class="num">Order</th><th class="num">Cost</th></tr></thead>
+            <tbody>${g.lines.map((l) => {
+              const r = statusOf[l.productId];
+              return `<tr><td><b>${esc(l.name)}</b> <span class="muted">· ${esc(l.unit)}</span><div>${restockPill(r)}</div></td>
+                <td class="num">${r.product.stock}</td><td class="num">${r.onOrder || '—'}</td>
+                <td class="num"><input class="count-input" type="number" min="0" step="1" name="qty-${l.productId}" value="${l.qty}" aria-label="Order quantity for ${esc(l.name)}"></td>
+                <td class="num">${money(l.lineCost)}</td></tr>`;
+            }).join('')}
+              <tr><td colspan="4"><b>Total</b></td><td class="num"><b>${money(g.total)}</b></td></tr></tbody>
+          </table></div>
+          <div class="row" style="margin-top:12px;justify-content:space-between">
+            <input name="note" placeholder="Note for supplier (optional)" style="flex:1;min-width:180px">
+            <button class="btn primary">Place order</button>
+          </div>
+        </form>`).join('')}</div>`
+        : `<div class="card"><p class="empty">Nothing needs ordering right now${openOrderCount() ? ' — the rest is already on order' : ''}.</p></div>`}`;
+    $$('form[data-group]', el).forEach((form) => form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const g = suggested[Number(form.dataset.group)];
+      const f = new FormData(form);
+      const order = act(() => C.placeOrder(state, {
+        supplier: f.get('supplier'),
+        note: f.get('note'),
+        staff: currentStaff(),
+        items: g.lines.map((l) => ({ productId: l.productId, qty: f.get('qty-' + l.productId) })),
+      }), (o) => `Order ${o.id} placed with ${o.supplier}`);
+      if (order) orderMessageModal(order);
+    }));
+  }
+
+  function orderStatusPill(o) {
+    return {
+      ordered: '<span class="pill warn">Waiting for delivery</span>',
+      part: '<span class="pill warn">Part delivered</span>',
+      received: '<span class="pill good">Received</span>',
+      cancelled: '<span class="pill">Cancelled</span>',
+    }[o.status];
+  }
+
+  function watchOrders(el) {
+    const open = state.orders.filter((o) => o.status === 'ordered' || o.status === 'part').reverse();
+    const done = state.orders.filter((o) => o.status === 'received' || o.status === 'cancelled').slice(-15).reverse();
+    const linesText = (o) => o.lines.map((l) => esc(l.name) + ' × ' + (o.status === 'part' ? `${l.received}/${l.qty}` : l.qty)).join(', ');
+    el.innerHTML = `
+      <div class="card" style="margin-bottom:14px">
+        <h3>Waiting for delivery</h3>
+        ${open.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>Order</th><th>Placed</th><th>Supplier</th><th>Items</th><th class="num">Value</th><th>Status</th><th></th></tr></thead>
+          <tbody>${open.map((o) => `<tr>
+            <td>${o.id}</td><td>${fmtDateTime(o.date)}<div class="muted" style="font-size:12px">${esc(o.staff)}</div></td><td><b>${esc(o.supplier)}</b></td>
+            <td>${linesText(o)}</td><td class="num">${money(o.total)}</td><td>${orderStatusPill(o)}</td>
+            <td class="num no-print" style="white-space:nowrap">
+              <button class="btn small primary" data-receive="${o.id}">Receive</button>
+              <button class="btn small" data-msg="${o.id}">Message</button>
+              <button class="btn small ghost" data-close="${o.id}">Close</button>
+            </td></tr>`).join('')}</tbody></table></div>`
+          : '<p class="empty">No orders waiting. Place one from <b>To order</b>.</p>'}
+      </div>
+      <div class="card">
+        <h3>Recent orders</h3>
+        ${done.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>Order</th><th>Placed</th><th>Supplier</th><th>Items</th><th class="num">Value</th><th>Status</th></tr></thead>
+          <tbody>${done.map((o) => `<tr><td>${o.id}</td><td>${fmtDateTime(o.date)}</td><td>${esc(o.supplier)}</td>
+            <td>${o.lines.map((l) => esc(l.name) + ' × ' + l.received + (l.received !== l.qty ? ` <span class="muted">of ${l.qty}</span>` : '')).join(', ')}</td>
+            <td class="num">${money(o.total)}</td><td>${orderStatusPill(o)}${o.closedReason ? `<div class="muted" style="font-size:12px">${esc(o.closedReason)}</div>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+          : '<p class="empty">Received and cancelled orders will show here.</p>'}
+      </div>`;
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      const id = b.dataset.receive || b.dataset.msg || b.dataset.close;
+      if (!id) return;
+      const o = state.orders.find((x) => x.id === id);
+      if (b.dataset.receive) receiveOrderForm(o);
+      if (b.dataset.msg) orderMessageModal(o);
+      if (b.dataset.close) openModal({
+        title: `Close order ${o.id}?`,
+        body: `<p class="muted" style="margin-top:0">Stop waiting for the rest of this order from ${esc(o.supplier)}. Anything not delivered will be suggested again under <b>To order</b> if you still need it.</p>
+          <label class="field">Reason (optional)<input name="reason" placeholder="e.g. Supplier out of stock"></label>`,
+        okText: 'Close order', danger: true,
+        onSubmit: (f) => { const c = C.closeOrder(state, o.id, f.get('reason')); return `Order ${c.id} ${c.status === 'cancelled' ? 'cancelled' : 'closed'}`; },
+      });
+    });
+  }
+
+  function receiveOrderForm(o) {
+    const outstanding = o.lines.filter((l) => l.received < l.qty);
+    openModal({
+      title: `Receive order ${o.id} · ${o.supplier}`,
+      body: `<p class="muted" style="margin-top:0;font-size:13px">Everything still due is filled in. Change a number only if the delivery was different, update a price if it changed, and add best-before dates for items that expire.</p>
+        <div class="form-grid" style="margin-bottom:10px"><label class="field">Supplier invoice # (optional)<input name="invoice"></label></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Product</th><th class="num">Due</th><th class="num">Arrived</th><th class="num">Unit cost</th><th>Best before</th></tr></thead>
+          <tbody>${outstanding.map((l) => `<tr data-line="${l.productId}">
+            <td>${esc(l.name)}</td><td class="num">${l.qty - l.received}</td>
+            <td class="num"><input class="count-input" type="number" min="0" step="1" name="qty" value="${l.qty - l.received}"></td>
+            <td class="num"><input class="count-input" type="number" min="0" step="0.01" name="unitCost" value="${l.unitCost}"></td>
+            <td><input type="date" name="expiry"></td></tr>`).join('')}</tbody>
+        </table></div>`,
+      okText: 'Book into stock',
+      wide: true,
+      onSubmit: (f, b) => {
+        const lines = $$('[data-line]', b).map((row) => ({
+          productId: row.dataset.line,
+          qty: $('[name=qty]', row).value || 0,
+          unitCost: $('[name=unitCost]', row).value,
+          expiry: $('[name=expiry]', row).value,
+        }));
+        const { order, delivery } = C.receiveOrder(state, o.id, { lines, invoice: f.get('invoice'), staff: currentStaff() });
+        const units = delivery.lines.reduce((n, l) => n + l.qty, 0);
+        return `${plural(units, 'unit')} booked into stock from ${order.supplier}` + (order.status === 'part' ? ' — rest still on order' : '');
+      },
+    });
+  }
+
+  function copyText(text, box) {
+    try {
+      navigator.clipboard.writeText(text).catch(() => { box.select(); document.execCommand('copy'); });
+    } catch (_) {
+      box.select();
+      document.execCommand('copy');
+    }
+  }
+
+  function orderMessageModal(o) {
+    const text = C.orderMessage(state, o);
+    setTimeout(() => openModal({
+      title: `Send order ${o.id} to ${o.supplier}`,
+      body: `<p class="muted" style="margin-top:0">Copy this and send it to ${esc(o.supplier)} by WhatsApp, SMS or email.</p>
+        <textarea class="copy-box" id="orderText" readonly>${esc(text)}</textarea>`,
+      okText: 'Copy message',
+      onSubmit: (f, b) => { copyText(text, $('#orderText', b)); return 'Order message copied'; },
+    }), 0);
+  }
+
+  function importForm() {
+    openModal({
+      title: 'Import products from a spreadsheet',
+      body: `<p class="muted" style="margin-top:0">In Excel or Google Sheets, select your product list (including the heading row) and copy it, then paste below. Or choose a CSV file.</p>
+        <p class="muted" style="font-size:13px">Recognised headings: <b>Product</b>, Category, Unit, Cost price, Selling price, Stock, Reorder level, Order up to, Supplier.
+          Products already in the system are updated by name (their stock stays as counted); new ones are added with the stock given.</p>
+        <textarea class="copy-box" name="text" id="importText" placeholder="Product&#9;Category&#9;Unit&#9;Cost price&#9;Selling price&#9;Stock&#9;Reorder level&#9;Supplier"></textarea>
+        <label class="btn small" style="margin-top:8px">Choose CSV file<input type="file" id="importFile" accept=".csv,.tsv,.txt,text/csv" hidden></label>`,
+      okText: 'Import',
+      wide: true,
+      onOpen: (b) => {
+        $('#importFile', b).addEventListener('change', async (e) => {
+          const file = e.target.files[0];
+          if (file) $('#importText', b).value = await file.text();
+        });
+      },
+      onSubmit: (f) => {
+        const r = C.importProducts(state, f.get('text'));
+        if (!r.added && !r.updated) throw new Error('No products imported. ' + (r.skipped[0] ? `Line ${r.skipped[0].line}: ${r.skipped[0].reason}` : ''));
+        const skipped = r.skipped.length ? ` · skipped ${r.skipped.length} (line ${r.skipped.map((x) => x.line).join(', ')})` : '';
+        return `${r.added} added, ${r.updated} updated${skipped}`;
+      },
+    });
   }
 
   function watchDamaged(el, wo) {
@@ -1158,8 +1331,11 @@
       ['Peanuts', 'Snacks', 'packet', 7, 18, 20, 6],
     ];
     const ids = {};
+    const supplierFor = (name, category) =>
+      /^(Castle|Black Label)/.test(name) ? 'SAB' : /Heineken/.test(name) ? 'Heineken SA' : category === 'Cider' ? 'Distell'
+        : /Coca-Cola|Water/.test(name) ? 'Coca-Cola Beverages SA' : /Red Bull/.test(name) ? 'Red Bull SA' : 'Makro';
     for (const [name, category, unit, costPrice, sellPrice, stock, reorderLevel] of items) {
-      ids[name] = C.addProduct(state, { name, category, unit, costPrice, sellPrice, stock, reorderLevel }).id;
+      ids[name] = C.addProduct(state, { name, category, unit, costPrice, sellPrice, stock, reorderLevel, supplier: supplierFor(name, category) }).id;
     }
     const inDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return C.localDay(d); };
     C.addExpiryBatch(state, { productId: ids['Peanuts'], qty: 6, expiry: inDays(-2), note: 'Sample' });

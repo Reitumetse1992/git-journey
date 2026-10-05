@@ -10,7 +10,7 @@ connection needed — open `index.html` on the bar laptop or tablet and start.
 
 1. Open `black-diamond-bar/index.html` in Chrome, Edge, Safari or Firefox.
 2. Go to **Settings** and set the bar name, currency and staff names.
-3. Add your products under **Products** (or click **Load sample products** to try it out).
+3. Load your products under **Products → Import from spreadsheet** (or add them one by one, or click **Load sample products** to try it out). Include each product's supplier so orders can be grouped automatically.
 4. Pick who is on shift from the top-right menu and start selling.
 
 ## What each section does
@@ -19,13 +19,13 @@ connection needed — open `index.html` on the bar laptop or tablet and start.
 |---|---|
 | **Dashboard** | See tonight's sales, profit, items sold, stock value, the reorder list and the latest sales. |
 | **Sell** | Tap drinks to build an order, choose Cash / Card / EFT / Tab, and record the sale. Stock goes down automatically and you can't sell what isn't there. |
-| **Products** | Keep the price list: name, category, unit (bottle, tot, glass…), cost price, selling price, reorder level. Shows margin and stock status. |
+| **Products** | Keep the price list, including each product's **supplier**. **Import from spreadsheet** loads or updates the whole list at once by pasting from Excel / Google Sheets or choosing a CSV file. Fields: name, category, unit (bottle, tot, glass…), cost price, selling price, reorder level. Shows margin and stock status. |
 | **Stock → Stock take** | Enter the physical count for each item. The system shows expected vs counted and the rand value of any variance (shortage), then sets stock to the count. |
-| **Stock → Deliveries** | Record stock coming in from suppliers, with invoice number, unit cost and an optional best-before date. Cost prices update from the latest delivery. |
+| **Stock → Deliveries** | Deliveries that came in without an order (most deliveries are received from **Stock Watch → On order** instead). Record stock coming in from suppliers, with invoice number, unit cost and an optional best-before date. Cost prices update from the latest delivery. |
 | **Stock → Record damage** | Write off broken, spilled, damaged, spoiled or expired stock. It is removed from stock and listed in Stock Watch with its cost. |
 | **Stock → Adjust** | Other corrections such as staff drinks, complimentary drinks or found stock — always with a reason. |
 | **Stock → Movement log** | Audit trail of every change to every product: sales, voids, deliveries, adjustments and count variances, with running balance. |
-| **Stock Watch** | One place for problems: **Needs restocking** (out of stock, below reorder level, or selling fast enough to run out within a week, with a suggested order quantity and cost — download or print it as an order list), **Damaged stock** (everything broken, spilled, spoiled or expired, with reason, who recorded it and what it cost), and **Expiring soon** (stock past or near its best-before date, with one-click write-off). The tab shows a red count when something needs attention. |
+| **Stock Watch** | **To order:** orders the system works out by itself from your sales, one per supplier, with quantities to top each item back up (less anything already on order). Check the numbers, press **Place order**, and copy the ready-made message to send to the supplier. **On order:** orders waiting for delivery; press **Receive** when the delivery arrives and everything ordered is filled in — just correct anything that was different and add best-before dates. **Damaged stock** and **Expiring soon** as before. The tab shows a red count when something needs attention. |
 | **Sales** | All transactions for any date range, with who made each one. Filter by staff member. Open a sale to see its items or void it. |
 | **Staff & Voids** | Sales per staff member (number, items, value, average) and how many of their sales were voided. The **void log** lists every correction: which sale, who made it, who voided it, which manager authorised it, and why. A manager voiding their own sale is flagged. |
 | **Reports** | Revenue, cost of sales, gross profit and margin; breakdowns by category, payment method, staff member, hour and day; product performance; stock variance. Export to CSV or print. |
@@ -36,9 +36,9 @@ connection needed — open `index.html` on the bar laptop or tablet and start.
 - **Opening:** pick who is on shift. Every sale is recorded against that name, so change it at each shift change.
 - **Mistakes:** open the sale under **Sales** and choose **Void sale**. Pick what went wrong; a manager picks their name and enters their PIN to approve it.
 - **During service:** record every sale on the **Sell** screen.
-- **Deliveries:** record them as soon as they are checked in.
 - **Breakages and spills:** record them straight away with **Record damage**.
-- **Before ordering:** open **Stock Watch → Needs restocking** and download the order list.
+- **Ordering:** open **Stock Watch → To order**. The orders are already worked out from sales; place them and send the message to each supplier.
+- **Deliveries:** when a delivery arrives, open **Stock Watch → On order** and press **Receive**. Stock, cost prices and best-before dates update in one step.
 - **Weekly:** check **Stock Watch → Expiring soon**; move short-dated stock to the front or write it off.
 - **Closing (or weekly):** do a **Stock take**, then check **Reports → Stock variance**.
   A big negative variance means stock is going missing — check the movement log for that product.
