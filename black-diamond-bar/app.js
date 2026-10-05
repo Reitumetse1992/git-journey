@@ -130,7 +130,8 @@
 
   function renderStaff() {
     const sel = $('#staffSelect');
-    const remembered = localStorage.getItem(STAFF_KEY);
+    let remembered = null;
+    try { remembered = localStorage.getItem(STAFF_KEY); } catch (_) { /* storage blocked */ }
     const current = sel.value || remembered || state.settings.staff[0] || '';
     sel.innerHTML = state.settings.staff.map((s) => `<option ${s === current ? 'selected' : ''}>${esc(s)}</option>`).join('');
   }
