@@ -48,10 +48,10 @@ test('a sale is refused when stock is short and nothing changes', () => {
 test('voiding a sale returns stock and excludes it from reports', () => {
   const { s, castle } = setup();
   const sale = core.recordSale(s, { items: [{ productId: castle.id, qty: 6 }], payment: 'Card' });
-  assert.throws(() => core.voidSale(s, sale.id, ''), /reason/);
-  core.voidSale(s, sale.id, 'Rang up wrong item');
+  assert.throws(() => core.voidSale(s, sale.id, { reason: '', authorisedBy: 'Manager' }), /reason/);
+  core.voidSale(s, sale.id, { reason: 'Rang up wrong item', voidedBy: 'Manager', authorisedBy: 'Manager' });
   assert.equal(castle.stock, 48);
-  assert.throws(() => core.voidSale(s, sale.id, 'again'), /already voided/);
+  assert.throws(() => core.voidSale(s, sale.id, { reason: 'again', authorisedBy: 'Manager' }), /already voided/);
   const r = core.salesReport(s);
   assert.equal(r.revenue, 0);
   assert.equal(r.voids, 1);
@@ -209,4 +209,62 @@ test('restock list covers low stock and fast sellers with suggested quantities',
   assert.equal(castle.daysLeft, 2);
   assert.equal(castle.orderQty, 42 - 16, 'no par level: tops up to a week of sales');
   assert.equal(r.rows.find((x) => x.product.id === out.id).orderQty, 12);
+});
+
+test('voids need an allowed manager and their PIN, and record who did what', () => {
+  const { s, castle } = setup();
+  s.settings.staff = ['Lerato', 'Thabo', 'Sipho'];
+  s.settings.managers = ['Lerato'];
+  s.settings.managerPins = { Lerato: '4321' };
+  const sale = core.recordSale(s, { items: [{ productId: castle.id, qty: 2 }], payment: 'Cash', staff: 'Thabo' });
+  const base = { reason: 'Wrong item rung up', voidedBy: 'Thabo' };
+  assert.throws(() => core.voidSale(s, sale.id, base), /must authorise/);
+  assert.throws(() => core.voidSale(s, sale.id, { ...base, authorisedBy: 'Sipho' }), /not allowed/);
+  assert.throws(() => core.voidSale(s, sale.id, { ...base, authorisedBy: 'Lerato', pin: '0000' }), /Incorrect PIN/);
+  assert.equal(castle.stock, 46, 'failed attempts change nothing');
+  const v = core.voidSale(s, sale.id, { ...base, authorisedBy: 'Lerato', pin: '4321' });
+  assert.equal(v.voidedBy, 'Thabo');
+  assert.equal(v.authorisedBy, 'Lerato');
+  assert.equal(castle.stock, 48);
+  assert.match(s.movements.at(-1).note, /authorised by Lerato/);
+});
+
+test('with no managers set up, any staff member can authorise', () => {
+  const { s } = setup();
+  s.settings.staff = ['Thabo'];
+  s.settings.managers = ['Someone who left'];
+  assert.deepEqual(core.voidAuthorisers(s), ['Thabo']);
+});
+
+test('staff report shows sales and voids per person and a void log', () => {
+  const { s, castle, jameson } = setup();
+  s.settings.staff = ['Lerato', 'Thabo'];
+  s.settings.managers = ['Lerato'];
+  core.recordSale(s, { items: [{ productId: castle.id, qty: 2 }], payment: 'Cash', staff: 'Thabo', date: '2026-10-03T20:00:00' });
+  const bad = core.recordSale(s, { items: [{ productId: jameson.id, qty: 1 }], payment: 'Card', staff: 'Thabo', date: '2026-10-03T21:00:00' });
+  core.recordSale(s, { items: [{ productId: jameson.id, qty: 3 }], payment: 'Card', staff: 'Lerato', date: '2026-10-03T22:00:00' });
+  const own = core.recordSale(s, { items: [{ productId: castle.id, qty: 1 }], payment: 'Cash', staff: 'Lerato', date: '2026-10-03T22:30:00' });
+  core.voidSale(s, bad.id, { reason: 'Wrong quantity', voidedBy: 'Thabo', authorisedBy: 'Lerato', date: '2026-10-03T21:05:00' });
+  core.voidSale(s, own.id, { reason: 'Duplicate sale', voidedBy: 'Lerato', authorisedBy: 'Lerato', date: '2026-10-04T00:10:00' });
+
+  const r = core.staffReport(s, { from: '2026-10-03', to: '2026-10-04' });
+  const thabo = r.rows.find((x) => x.name === 'Thabo');
+  const lerato = r.rows.find((x) => x.name === 'Lerato');
+  assert.deepEqual([thabo.sales, thabo.revenue, thabo.items, thabo.voidedSales, thabo.voidedValue, thabo.voidsRequested], [1, 50, 2, 1, 30, 1]);
+  assert.deepEqual([lerato.sales, lerato.revenue, lerato.voidsAuthorised, lerato.voidsRequested], [1, 90, 2, 1]);
+  assert.equal(r.voids.length, 2);
+  assert.equal(r.voids[0].saleId, own.id, 'newest void first');
+  assert.equal(r.voids[0].selfAuthorised, true);
+  assert.equal(r.voids[1].madeBy, 'Thabo');
+  assert.equal(r.voidValue, 55);
+
+  // Voids are dated by when they happened, not when the sale was made.
+  assert.equal(core.staffReport(s, { from: '2026-10-03', to: '2026-10-03' }).voids.length, 1);
+});
+
+test('old backups without managers get one so voids still work', () => {
+  const old = core.createState();
+  old.settings.staff = ['Thabo', 'Lerato'];
+  delete old.settings.managers;
+  assert.deepEqual(core.loadState(JSON.stringify(old)).settings.managers, ['Thabo']);
 });

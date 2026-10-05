@@ -146,7 +146,7 @@
     $$('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
     const alerts = C.restockList(state).rows.length + C.expiryReport(state).rows.filter((r) => r.status !== 'soon').length;
     $('#watchBadge').textContent = alerts || '';
-    const views = { dashboard, sell, products, stock, watch, sales, reports, settings };
+    const views = { dashboard, sell, products, stock, watch, sales, staff: staffView, reports, settings };
     // A fresh container each render so view-level event listeners never pile up.
     const fresh = document.createElement('main');
     fresh.id = 'view';
@@ -775,15 +775,16 @@
 
   let salesFrom = today();
   let salesTo = today();
+  let salesStaff = '';
 
   function salesTable(list, withDate = false) {
     if (!list.length) return '';
     return `<div class="table-wrap"><table>
-      <thead><tr><th>Ref</th><th>${withDate ? 'Date' : 'Time'}</th><th>Staff</th><th>Items</th><th>Payment</th><th class="num">Total</th><th></th></tr></thead>
+      <thead><tr><th>Ref</th><th>${withDate ? 'Date' : 'Time'}</th><th>Made by</th><th>Items</th><th>Payment</th><th class="num">Total</th><th></th></tr></thead>
       <tbody>${list.map((s) => `<tr class="${s.voided ? 'dim' : ''}">
         <td>${s.id}</td><td>${withDate ? fmtDateTime(s.date) : fmtTime(s.date)}</td><td>${esc(s.staff)}</td>
         <td>${s.lines.map((l) => esc(l.name) + ' × ' + l.qty).join(', ')}</td>
-        <td>${s.voided ? '<span class="pill bad">Void</span>' : esc(s.payment)}</td>
+        <td>${s.voided ? `<span class="pill bad" title="Authorised by ${esc(s.authorisedBy || '—')}">Void</span>` : esc(s.payment)}</td>
         <td class="num">${money(s.total)}</td>
         <td class="num no-print"><button class="btn small" data-sale="${s.id}">View</button></td></tr>`).join('')}</tbody></table></div>`;
   }
@@ -792,33 +793,72 @@
     el.addEventListener('click', (e) => {
       const id = e.target.closest('[data-sale]')?.dataset.sale;
       if (!id) return;
-      const s = state.sales.find((x) => x.id === id);
-      openModal({
-        title: `Sale ${s.id}`,
-        body: `<p class="muted" style="margin-top:0">${fmtDateTime(s.date)} · ${esc(s.staff || 'Unassigned')} · ${esc(s.payment)}</p>
-          <div class="table-wrap"><table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Total</th></tr></thead><tbody>
-          ${s.lines.map((l) => `<tr><td>${esc(l.name)}</td><td class="num">${l.qty}</td><td class="num">${money(l.unitPrice)}</td><td class="num">${money(l.lineTotal)}</td></tr>`).join('')}
-          <tr><td colspan="3"><b>Total</b></td><td class="num"><b>${money(s.total)}</b></td></tr></tbody></table></div>
-          ${s.voided ? `<p class="neg">Voided ${fmtDateTime(s.voidedAt)}: ${esc(s.voidReason)}</p>`
-            : '<label class="field" style="margin-top:14px">To void this sale and return the stock, give a reason:<input name="reason" placeholder="e.g. Rang up wrong drink"></label>'}`,
-        okText: s.voided ? 'Close' : 'Void sale',
-        danger: !s.voided,
-        onSubmit: (f) => {
-          if (s.voided) return '';
-          C.voidSale(state, s.id, f.get('reason'));
-          return `Sale ${s.id} voided, stock returned`;
-        },
-      });
+      saleModal(state.sales.find((x) => x.id === id));
+    });
+  }
+
+  function saleModal(s) {
+    const managers = C.voidAuthorisers(state);
+    const pins = state.settings.managerPins || {};
+    const me = currentStaff();
+    const defaultManager = managers.includes(me) ? me : managers[0];
+    openModal({
+      title: `Sale ${s.id}`,
+      body: `<p class="muted" style="margin-top:0">Made by <b class="who">${esc(s.staff || 'Unassigned')}</b> · ${fmtDateTime(s.date)} · ${esc(s.payment)}</p>
+        <div class="table-wrap"><table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Total</th></tr></thead><tbody>
+        ${s.lines.map((l) => `<tr><td>${esc(l.name)}</td><td class="num">${l.qty}</td><td class="num">${money(l.unitPrice)}</td><td class="num">${money(l.lineTotal)}</td></tr>`).join('')}
+        <tr><td colspan="3"><b>Total</b></td><td class="num"><b>${money(s.total)}</b></td></tr></tbody></table></div>
+        ${s.voided ? `<div class="void-box">
+            <div class="void-head"><span class="pill bad">Voided</span> ${fmtDateTime(s.voidedAt)}</div>
+            <dl class="void-facts">
+              <dt>Sale made by</dt><dd>${esc(s.staff || 'Unassigned')}</dd>
+              <dt>Voided by</dt><dd>${esc(s.voidedBy || '—')}</dd>
+              <dt>Authorised by</dt><dd>${esc(s.authorisedBy || '—')}${s.authorisedBy && s.authorisedBy === s.staff ? ' <span class="pill warn">Own sale</span>' : ''}</dd>
+              <dt>Reason</dt><dd>${esc(s.voidReason)}</dd>
+            </dl></div>`
+          : `<div class="void-box">
+            <h3 style="margin-bottom:8px">Void this sale</h3>
+            <p class="muted" style="margin:0 0 10px;font-size:13px">Use this to correct a mistake. The stock goes back on the shelf and the sale stays on record as voided. A manager must approve it.</p>
+            <div class="form-grid">
+              <label class="field">What went wrong?<select name="reason" id="voidReason">${C.VOID_REASONS.map((r) => `<option>${r}</option>`).join('')}</select></label>
+              <label class="field">Details<input name="details" id="voidDetails" placeholder="e.g. Rang up Castle instead of Castle Lite"></label>
+              <label class="field">Voided by<input value="${esc(me || 'Unassigned')}" disabled></label>
+              <label class="field">Authorised by<select name="authorisedBy" id="voidManager">${managers.map((m) => `<option ${m === defaultManager ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
+              <label class="field" id="voidPinField">Manager PIN<input name="pin" id="voidPin" type="password" inputmode="numeric" autocomplete="off" maxlength="6"></label>
+            </div></div>`}`,
+      okText: s.voided ? 'Close' : 'Void sale',
+      danger: !s.voided,
+      onOpen: (b) => {
+        if (s.voided) return;
+        const sync = () => { $('#voidPinField', b).hidden = !pins[$('#voidManager', b).value]; };
+        $('#voidManager', b).addEventListener('change', sync);
+        sync();
+        $('#voidReason', b).focus();
+      },
+      onSubmit: (f) => {
+        if (s.voided) return '';
+        const details = String(f.get('details') || '').trim();
+        if (f.get('reason') === 'Other' && !details) throw new Error('Describe what went wrong');
+        C.voidSale(state, s.id, {
+          reason: f.get('reason') + (details ? ' — ' + details : ''),
+          voidedBy: me,
+          authorisedBy: f.get('authorisedBy'),
+          pin: f.get('pin'),
+        });
+        return `Sale ${s.id} voided, authorised by ${f.get('authorisedBy')}. Stock returned.`;
+      },
     });
   }
 
   function sales(el) {
-    const list = state.sales.filter((s) => { const d = C.localDay(s.date); return d >= salesFrom && d <= salesTo; }).reverse();
+    const list = state.sales.filter((s) => { const d = C.localDay(s.date); return d >= salesFrom && d <= salesTo && (!salesStaff || s.staff === salesStaff); }).reverse();
+    const sellers = [...new Set([...state.settings.staff, ...state.sales.map((s) => s.staff).filter(Boolean)])];
     const r = C.salesReport(state, { from: salesFrom, to: salesTo });
     el.innerHTML = `
       <div class="page-head">
         <div><h1>Sales records</h1><p class="lead">Every transaction, with voids kept for the audit trail.</p></div>
         <div class="row no-print">
+          <select id="sStaff" aria-label="Made by"><option value="">Everyone</option>${sellers.map((n) => `<option ${n === salesStaff ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
           <input type="date" id="sFrom" value="${salesFrom}"> <span class="muted">to</span> <input type="date" id="sTo" value="${salesTo}">
           <button class="btn" id="sExport">Export CSV</button>
         </div>
@@ -831,13 +871,86 @@
       <div class="card">${salesTable(list, salesFrom !== salesTo) || '<p class="empty">No sales in this period.</p>'}</div>`;
     $('#sFrom', el).addEventListener('change', (e) => { salesFrom = e.target.value || today(); render(); });
     $('#sTo', el).addEventListener('change', (e) => { salesTo = e.target.value || today(); render(); });
+    $('#sStaff', el).addEventListener('change', (e) => { salesStaff = e.target.value; render(); });
     $('#sExport', el).addEventListener('click', () => {
       const rows = [];
       for (const s of list.slice().reverse()) for (const l of s.lines) {
-        rows.push([s.id, new Date(s.date).toLocaleString(), s.staff, s.payment, l.name, l.category, l.qty, l.unitPrice, l.lineTotal, l.lineCost, s.voided ? 'VOID' : '']);
+        rows.push([s.id, new Date(s.date).toLocaleString(), s.staff, s.payment, l.name, l.category, l.qty, l.unitPrice, l.lineTotal, l.lineCost, s.voided ? 'VOID' : '', s.voidedBy || '', s.authorisedBy || '', s.voidReason || '']);
       }
-      download(`sales-${salesFrom}_to_${salesTo}.csv`, C.toCSV(['Sale', 'Date', 'Staff', 'Payment', 'Product', 'Category', 'Qty', 'Unit price', 'Line total', 'Line cost', 'Status'], rows));
+      download(`sales-${salesFrom}_to_${salesTo}.csv`, C.toCSV(['Sale', 'Date', 'Made by', 'Payment', 'Product', 'Category', 'Qty', 'Unit price', 'Line total', 'Line cost', 'Status', 'Voided by', 'Authorised by', 'Void reason'], rows));
     });
+    bindSaleButtons(el);
+  }
+
+  // =========================================================
+  // Staff & Voids
+  // =========================================================
+
+  let staffFrom = today();
+  let staffTo = today();
+
+  function staffView(el) {
+    const r = C.staffReport(state, { from: staffFrom, to: staffTo });
+    const sold = C.round2(r.rows.reduce((n, x) => n + x.revenue, 0));
+    const voidedValue = C.round2(r.rows.reduce((n, x) => n + x.voidedValue, 0));
+    const saleCount = r.rows.reduce((n, x) => n + x.sales, 0);
+    const own = r.voids.filter((v) => v.selfAuthorised).length;
+    const presets = [['Today', today(), today()], ['Last 7 days', daysAgo(6), today()], ['Last 30 days', daysAgo(29), today()]];
+    el.innerHTML = `
+      <div class="page-head">
+        <div><h1>Staff &amp; Voids</h1><p class="lead">Who made each sale, and who voided and authorised every correction.</p></div>
+        <div class="row no-print">
+          ${presets.map(([l, f, t]) => `<button class="btn small ${f === staffFrom && t === staffTo ? 'primary' : ''}" data-from="${f}" data-to="${t}">${l}</button>`).join('')}
+          <input type="date" id="stFrom" value="${staffFrom}"><input type="date" id="stTo" value="${staffTo}">
+        </div>
+      </div>
+      <div class="grid kpis">
+        ${kpi('Sales', money(sold), plural(saleCount, 'sale') + ' by ' + plural(r.rows.filter((x) => x.sales).length, 'person'))}
+        ${kpi('Voids', r.voids.length, money(r.voidValue) + ' corrected')}
+        ${kpi('Voided share', (sold + voidedValue > 0 ? Math.round((voidedValue / (sold + voidedValue)) * 1000) / 10 : 0) + '%', 'of sales value rung up')}
+        ${kpi('Own sale voids', own, own ? 'manager voided their own sale' : 'none')}
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <h3>Sales by staff</h3>
+        ${r.rows.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>Staff</th><th class="num">Sales</th><th class="num">Items</th><th class="num">Sales value</th><th class="num">Avg sale</th><th class="num">Their sales voided</th><th class="num">Value voided</th><th class="num">Voids asked for</th><th class="num">Voids authorised</th><th></th></tr></thead>
+          <tbody>${r.rows.map((x) => `<tr>
+            <td><b>${esc(x.name)}</b>${C.voidAuthorisers(state).includes(x.name) ? ' <span class="pill">Manager</span>' : ''}</td>
+            <td class="num">${x.sales}</td><td class="num">${x.items}</td><td class="num">${money(x.revenue)}</td>
+            <td class="num">${x.sales ? money(x.revenue / x.sales) : '—'}</td>
+            <td class="num ${x.voidedSales ? 'neg' : ''}">${x.voidedSales}</td><td class="num">${x.voidedValue ? money(x.voidedValue) : '—'}</td>
+            <td class="num">${x.voidsRequested}</td><td class="num">${x.voidsAuthorised}</td>
+            <td class="num no-print"><button class="btn small" data-staff-sales="${esc(x.name)}">Sales</button></td></tr>`).join('')}</tbody>
+        </table></div>` : '<p class="empty">No sales in this period.</p>'}
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:10px"><h3 style="margin:0">Void log</h3>${r.voids.length ? '<button class="btn small no-print" id="voidExport">Export CSV</button>' : ''}</div>
+        ${r.voids.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>Voided</th><th>Sale</th><th>Made by</th><th>Items</th><th class="num">Amount</th><th>Voided by</th><th>Authorised by</th><th>Reason</th></tr></thead>
+          <tbody>${r.voids.map((v) => `<tr>
+            <td>${fmtDateTime(v.voidedAt)}</td>
+            <td><button class="link" data-sale="${v.saleId}">${v.saleId}</button><div class="muted" style="font-size:12px">rung up ${fmtDateTime(v.saleDate)}</div></td>
+            <td><b>${esc(v.madeBy)}</b></td>
+            <td>${v.lines.map((l) => esc(l.name) + ' × ' + l.qty).join(', ')}</td>
+            <td class="num">${money(v.total)}</td>
+            <td>${esc(v.voidedBy || '—')}</td>
+            <td>${esc(v.authorisedBy || '—')}${v.selfAuthorised ? ' <span class="pill warn">Own sale</span>' : ''}</td>
+            <td class="muted">${esc(v.reason)}</td></tr>`).join('')}</tbody>
+        </table></div>` : '<p class="empty">No voids in this period.</p>'}
+      </div>`;
+    $$('[data-from]', el).forEach((b) => b.addEventListener('click', () => { staffFrom = b.dataset.from; staffTo = b.dataset.to; render(); }));
+    $('#stFrom', el).addEventListener('change', (e) => { staffFrom = e.target.value || today(); render(); });
+    $('#stTo', el).addEventListener('change', (e) => { staffTo = e.target.value || today(); render(); });
+    $$('[data-staff-sales]', el).forEach((b) => b.addEventListener('click', () => {
+      salesStaff = b.dataset.staffSales; salesFrom = staffFrom; salesTo = staffTo; view = 'sales'; render();
+    }));
+    if (r.voids.length) {
+      $('#voidExport', el).addEventListener('click', () => download(`voids-${staffFrom}_to_${staffTo}.csv`, C.toCSV(
+        ['Voided at', 'Sale', 'Sale made at', 'Made by', 'Items', 'Amount', 'Voided by', 'Authorised by', 'Own sale', 'Reason'],
+        r.voids.map((v) => [new Date(v.voidedAt).toLocaleString(), v.saleId, new Date(v.saleDate).toLocaleString(), v.madeBy,
+          v.lines.map((l) => l.name + ' x ' + l.qty).join('; '), v.total, v.voidedBy, v.authorisedBy, v.selfAuthorised ? 'Yes' : '', v.reason]),
+      )));
+    }
     bindSaleButtons(el);
   }
 
@@ -923,6 +1036,20 @@
           <div class="row" style="margin-top:12px"><button class="btn primary">Save settings</button></div>
         </form>
         <div class="grid" style="align-content:start">
+          <form class="card" id="mgrForm">
+            <h3>Who can authorise voids</h3>
+            <p class="muted" style="margin-top:0">Tick the managers allowed to approve voided sales. Give each a PIN (4–6 digits) so nobody else can approve in their name.</p>
+            <div class="mgr-list">${st.staff.map((n, i) => {
+              const isMgr = C.voidAuthorisers(state).includes(n) && (st.managers || []).includes(n);
+              const hasPin = !!(st.managerPins || {})[n];
+              return `<div class="mgr-row">
+                <label class="row"><input type="checkbox" name="mgr" value="${esc(n)}" id="mgr${i}" ${isMgr ? 'checked' : ''}> ${esc(n)}</label>
+                <input type="password" inputmode="numeric" autocomplete="new-password" maxlength="6" id="pin${i}" data-pin-for="${esc(n)}" placeholder="${hasPin ? 'PIN set · type to change' : 'No PIN'}">
+                ${hasPin ? `<button type="button" class="btn small ghost" data-clear-pin="${esc(n)}">Remove PIN</button>` : '<span></span>'}
+              </div>`;
+            }).join('')}</div>
+            <div class="row" style="margin-top:12px"><button class="btn primary">Save managers</button></div>
+          </form>
           <div class="card">
             <h3>Backup &amp; restore</h3>
             <p class="muted" style="margin-top:0">Download everything as a single file, or restore from one. Use this to move to another device.</p>
@@ -976,6 +1103,24 @@
       e.target.value = '';
     });
     $('#sample', el).addEventListener('click', () => act(loadSample, 'Sample products loaded'));
+    $('#mgrForm', el).addEventListener('submit', (e) => {
+      e.preventDefault();
+      act(() => {
+        const managers = $$('[name=mgr]:checked', e.target).map((c) => c.value);
+        if (!managers.length) throw new Error('Tick at least one manager who can authorise voids');
+        const pins = { ...(state.settings.managerPins || {}) };
+        for (const input of $$('[data-pin-for]', e.target)) {
+          const v = input.value.trim();
+          if (!v) continue;
+          if (!/^\d{4,6}$/.test(v)) throw new Error('PIN for ' + input.dataset.pinFor + ' must be 4 to 6 digits');
+          pins[input.dataset.pinFor] = v;
+        }
+        for (const n of Object.keys(pins)) if (!managers.includes(n)) delete pins[n];
+        state.settings.managers = managers;
+        state.settings.managerPins = pins;
+      }, 'Managers saved');
+    });
+    $$('[data-clear-pin]', el).forEach((b) => b.addEventListener('click', () => act(() => { delete state.settings.managerPins[b.dataset.clearPin]; }, 'PIN removed for ' + b.dataset.clearPin)));
     $('#reset', el).addEventListener('click', () => openModal({
       title: 'Erase all data?',
       body: '<p>This cannot be undone. Download a backup first if you might need it.</p><label class="field">Type <b>ERASE</b> to confirm<input name="confirm" autocomplete="off"></label>',

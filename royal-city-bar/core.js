@@ -17,6 +17,7 @@
 
   const DEFAULT_CATEGORIES = ['Beer', 'Cider', 'Spirits', 'Wine', 'Shooters', 'Soft Drinks', 'Snacks', 'Other'];
   const PAYMENT_METHODS = ['Cash', 'Card', 'EFT', 'Tab'];
+  const VOID_REASONS = ['Wrong item rung up', 'Wrong quantity', 'Duplicate sale', 'Wrong payment method', 'Customer changed mind', 'Other'];
   const WRITE_OFF_REASONS = ['Broken', 'Spilled', 'Damaged packaging', 'Expired', 'Spoiled / flat', 'Other'];
   const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -27,6 +28,8 @@
         barName: 'Royal City Bar',
         currency: 'R',
         staff: ['Manager'],
+        managers: ['Manager'], // staff who may authorise voids
+        managerPins: {}, // optional PIN per manager
         categories: DEFAULT_CATEGORIES.slice(),
         expiryWarningDays: 30,
       },
@@ -224,19 +227,88 @@
     return sale;
   }
 
-  function voidSale(state, saleId, reason) {
+  /** Staff who may authorise voids. If none are set up, anyone on the staff list may. */
+  function voidAuthorisers(state) {
+    const managers = (state.settings.managers || []).filter((m) => state.settings.staff.includes(m));
+    return managers.length ? managers : state.settings.staff.slice();
+  }
+
+  /**
+   * Voids a sale and returns its stock. A void is a correction, so it records
+   * who asked for it (`voidedBy`, usually the person on shift) and the manager
+   * who authorised it (`authorisedBy`), checking that manager's PIN if one is set.
+   */
+  function voidSale(state, saleId, { reason, voidedBy, authorisedBy, pin, date } = {}) {
     const sale = state.sales.find((s) => s.id === saleId);
     if (!sale) throw new Error('Sale not found: ' + saleId);
     if (sale.voided) throw new Error('Sale ' + saleId + ' is already voided');
-    if (!String(reason || '').trim()) throw new Error('A reason is required to void a sale');
+    const why = String(reason || '').trim();
+    if (!why) throw new Error('A reason is required to void a sale');
+    if (!authorisedBy) throw new Error('A manager must authorise the void');
+    if (!voidAuthorisers(state).includes(authorisedBy)) throw new Error(authorisedBy + ' is not allowed to authorise voids');
+    const expectedPin = (state.settings.managerPins || {})[authorisedBy];
+    if (expectedPin && String(pin || '') !== String(expectedPin)) throw new Error('Incorrect PIN for ' + authorisedBy);
+
+    const when = date || new Date().toISOString();
     for (const l of sale.lines) {
       findProduct(state, l.productId).stock += l.qty;
-      logMovement(state, { productId: l.productId, type: 'void', qty: l.qty, ref: sale.id, note: reason });
+      logMovement(state, { productId: l.productId, type: 'void', qty: l.qty, ref: sale.id, date: when, note: why + ' (authorised by ' + authorisedBy + ')' });
     }
     sale.voided = true;
-    sale.voidReason = reason;
-    sale.voidedAt = new Date().toISOString();
+    sale.voidReason = why;
+    sale.voidedAt = when;
+    sale.voidedBy = voidedBy || '';
+    sale.authorisedBy = authorisedBy;
     return sale;
+  }
+
+  /**
+   * Per-person sales and voids for a period, plus a log of every void.
+   * Sales count by the day they were made; voids by the day they were voided.
+   */
+  function staffReport(state, { from, to } = {}) {
+    const rows = new Map();
+    const row = (name) => {
+      const key = name || 'Unassigned';
+      if (!rows.has(key)) rows.set(key, { name: key, sales: 0, revenue: 0, items: 0, voidedSales: 0, voidedValue: 0, voidsRequested: 0, voidsAuthorised: 0 });
+      return rows.get(key);
+    };
+    for (const s of state.sales) {
+      if (!inRange(s.date, from, to)) continue;
+      const r = row(s.staff);
+      if (s.voided) {
+        r.voidedSales += 1;
+        r.voidedValue = round2(r.voidedValue + s.total);
+      } else {
+        r.sales += 1;
+        r.revenue = round2(r.revenue + s.total);
+        r.items += s.lines.reduce((n, l) => n + l.qty, 0);
+      }
+    }
+    const voids = state.sales
+      .filter((s) => s.voided && inRange(s.voidedAt, from, to))
+      .sort((a, b) => (a.voidedAt < b.voidedAt ? 1 : -1))
+      .map((s) => ({
+        saleId: s.id,
+        saleDate: s.date,
+        voidedAt: s.voidedAt,
+        madeBy: s.staff || 'Unassigned',
+        voidedBy: s.voidedBy || '',
+        authorisedBy: s.authorisedBy || '',
+        reason: s.voidReason || '',
+        total: s.total,
+        lines: s.lines,
+        selfAuthorised: !!s.authorisedBy && s.authorisedBy === s.staff,
+      }));
+    for (const v of voids) {
+      if (v.voidedBy) row(v.voidedBy).voidsRequested += 1;
+      if (v.authorisedBy) row(v.authorisedBy).voidsAuthorised += 1;
+    }
+    return {
+      rows: [...rows.values()].sort((a, b) => b.revenue - a.revenue || a.name.localeCompare(b.name)),
+      voids,
+      voidValue: round2(voids.reduce((n, v) => n + v.total, 0)),
+    };
   }
 
   // ---------- stock in ----------
@@ -552,10 +624,15 @@
       throw new Error('This does not look like a Royal City Bar backup file');
     }
     const base = createState();
+    const settings = { ...base.settings, ...(data.settings || {}) };
+    // Backups made before void authorisation existed: let the first staff member authorise.
+    if (!data.settings || !Array.isArray(data.settings.managers)) {
+      settings.managers = settings.staff.includes('Manager') ? ['Manager'] : settings.staff.slice(0, 1);
+    }
     return {
       ...base,
       ...data,
-      settings: { ...base.settings, ...(data.settings || {}) },
+      settings,
       sales: data.sales || [],
       deliveries: data.deliveries || [],
       stockTakes: data.stockTakes || [],
@@ -570,6 +647,7 @@
   return {
     SCHEMA_VERSION,
     PAYMENT_METHODS,
+    VOID_REASONS,
     WRITE_OFF_REASONS,
     DEFAULT_CATEGORIES,
     createState,
@@ -582,6 +660,8 @@
     adjustStock,
     recordSale,
     voidSale,
+    voidAuthorisers,
+    staffReport,
     receiveStock,
     recordStockTake,
     recordWriteOff,

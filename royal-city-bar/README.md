@@ -26,13 +26,15 @@ connection needed — open `index.html` on the bar laptop or tablet and start.
 | **Stock → Adjust** | Other corrections such as staff drinks, complimentary drinks or found stock — always with a reason. |
 | **Stock → Movement log** | Audit trail of every change to every product: sales, voids, deliveries, adjustments and count variances, with running balance. |
 | **Stock Watch** | One place for problems: **Needs restocking** (out of stock, below reorder level, or selling fast enough to run out within a week, with a suggested order quantity and cost — download or print it as an order list), **Damaged stock** (everything broken, spilled, spoiled or expired, with reason, who recorded it and what it cost), and **Expiring soon** (stock past or near its best-before date, with one-click write-off). The tab shows a red count when something needs attention. |
-| **Sales** | All transactions for any date range. Open a sale to see its items or void it (a reason is required and the stock is returned). |
+| **Sales** | All transactions for any date range, with who made each one. Filter by staff member. Open a sale to see its items or void it. |
+| **Staff & Voids** | Sales per staff member (number, items, value, average) and how many of their sales were voided. The **void log** lists every correction: which sale, who made it, who voided it, which manager authorised it, and why. A manager voiding their own sale is flagged. |
 | **Reports** | Revenue, cost of sales, gross profit and margin; breakdowns by category, payment method, staff member, hour and day; product performance; stock variance. Export to CSV or print. |
-| **Settings** | Bar details, staff, categories, backup / restore, sample data, erase. |
+| **Settings** | Bar details, staff, categories, **who can authorise voids** (with a PIN per manager), backup / restore, sample data, erase. |
 
 ## Recommended routine
 
-- **Opening:** pick who is on shift.
+- **Opening:** pick who is on shift. Every sale is recorded against that name, so change it at each shift change.
+- **Mistakes:** open the sale under **Sales** and choose **Void sale**. Pick what went wrong; a manager picks their name and enters their PIN to approve it.
 - **During service:** record every sale on the **Sell** screen.
 - **Deliveries:** record them as soon as they are checked in.
 - **Breakages and spills:** record them straight away with **Record damage**.
@@ -65,6 +67,8 @@ Key rules enforced by `core.js`:
 - Sales snapshot the price and cost at the time of sale, so changing a price never rewrites history.
 - A sale is refused if any item would go below zero stock; nothing is changed when a sale fails.
 - Voids, adjustments and stock takes are logged with who, when and why — nothing is silently deleted.
+- A void needs a manager from the approved list (Settings → Who can authorise voids) and that manager's PIN if one is set. If every manager is later removed from the staff list, anyone on it can approve until new managers are ticked.
+- Manager PINs are a simple safeguard against someone approving in another person's name. They are stored on this device, so they are not strong security.
 - Products that have history are archived rather than deleted, so old reports stay correct.
 - Expiry tracking assumes stock is rotated first-expiry-first-out: units left on the shelf are counted against the latest best-before dates, so sales, damage and stock takes update the expiry list automatically.
 

@@ -149,6 +149,19 @@ tbody tr:hover { background: rgba(255, 255, 255, .02); }
 .watch-mini span { color: var(--muted); font-size: 12px; }
 .warn-t { color: var(--warn); }
 
+/* ---------- staff & voids ---------- */
+.void-box { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.void-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; color: var(--muted); }
+.void-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+.void-facts dt { color: var(--muted); }
+.void-facts dd { margin: 0; font-weight: 600; }
+.who { color: var(--text); }
+.mgr-list { display: grid; gap: 8px; }
+.mgr-row { display: grid; grid-template-columns: 1fr 160px 120px; gap: 8px; align-items: center; }
+.mgr-row input[type=password] { width: 100%; }
+button.link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 560px) { .mgr-row { grid-template-columns: 1fr 1fr; } .mgr-row > :last-child { grid-column: 1 / -1; } }
+
 /* ---------- stock take ---------- */
 .count-input { width: 90px; text-align: right; }
 
