@@ -17,6 +17,8 @@
 
   const DEFAULT_CATEGORIES = ['Beer', 'Cider', 'Spirits', 'Wine', 'Shooters', 'Soft Drinks', 'Snacks', 'Other'];
   const PAYMENT_METHODS = ['Cash', 'Card', 'EFT', 'Tab'];
+  const WRITE_OFF_REASONS = ['Broken', 'Spilled', 'Damaged packaging', 'Expired', 'Spoiled / flat', 'Other'];
+  const DAY_MS = 24 * 60 * 60 * 1000;
 
   function createState() {
     return {
@@ -26,11 +28,14 @@
         currency: 'R',
         staff: ['Manager'],
         categories: DEFAULT_CATEGORIES.slice(),
+        expiryWarningDays: 30,
       },
       products: [],
       sales: [],
       deliveries: [],
       stockTakes: [],
+      writeOffs: [],
+      batches: [], // expiry-dated lots: { id, productId, expiry, qty, source, ref, note, date }
       movements: [],
       seq: 1,
     };
@@ -60,6 +65,19 @@
     return (!from || day >= from) && (!to || day <= to);
   }
 
+  /** Whole days from `fromDay` to `toDay` (both YYYY-MM-DD). Negative if toDay is earlier. */
+  function daysBetween(fromDay, toDay) {
+    const [y1, m1, d1] = fromDay.split('-').map(Number);
+    const [y2, m2, d2] = toDay.split('-').map(Number);
+    return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / DAY_MS);
+  }
+
+  function requireDay(value, label) {
+    const s = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(Date.parse(s))) throw new Error(label + ' must be a valid date');
+    return s;
+  }
+
   function findProduct(state, id) {
     const p = state.products.find((x) => x.id === id);
     if (!p) throw new Error('Product not found: ' + id);
@@ -81,7 +99,7 @@
       date: date || new Date().toISOString(),
       productId,
       productName: p.name,
-      type, // sale | void | receive | stocktake | adjust | opening
+      type, // sale | void | receive | stocktake | adjust | writeoff | opening
       qty, // signed: negative removes stock
       balance: p.stock,
       ref: ref || '',
@@ -101,6 +119,7 @@
       costPrice: round2(requireNumber(input.costPrice ?? 0, 'Cost price')),
       sellPrice: round2(requireNumber(input.sellPrice ?? 0, 'Selling price')),
       reorderLevel: requireNumber(input.reorderLevel ?? 0, 'Reorder level', { integer: true }),
+      parLevel: requireNumber(input.parLevel === '' || input.parLevel == null ? 0 : input.parLevel, 'Order up to', { integer: true }),
       active: input.active !== false,
     };
   }
@@ -230,7 +249,8 @@
       const qty = requireNumber(it.qty, 'Quantity', { min: 1, integer: true });
       const hasCost = it.unitCost !== undefined && it.unitCost !== '' && it.unitCost !== null;
       const unitCost = hasCost ? round2(requireNumber(it.unitCost, 'Unit cost')) : p.costPrice;
-      return { productId: p.id, name: p.name, qty, unitCost, lineCost: round2(unitCost * qty) };
+      const expiry = it.expiry ? requireDay(it.expiry, 'Expiry date for ' + p.name) : '';
+      return { productId: p.id, name: p.name, qty, unitCost, lineCost: round2(unitCost * qty), expiry };
     });
     const delivery = {
       id: nextId(state, 'D'),
@@ -246,6 +266,9 @@
       p.stock += l.qty;
       p.costPrice = l.unitCost;
       logMovement(state, { productId: p.id, type: 'receive', qty: l.qty, ref: delivery.id, date: delivery.date, note: delivery.supplier });
+      if (l.expiry) {
+        state.batches.push({ id: nextId(state, 'B'), productId: p.id, expiry: l.expiry, qty: l.qty, source: 'delivery', ref: delivery.id, note: delivery.supplier, date: delivery.date });
+      }
     }
     state.deliveries.push(delivery);
     return delivery;
@@ -291,6 +314,155 @@
     }
     state.stockTakes.push(take);
     return take;
+  }
+
+  // ---------- damaged stock (write-offs) ----------
+
+  /** Removes damaged, spilled or expired stock and keeps a record of its cost. */
+  function recordWriteOff(state, { productId, qty, reason, note, staff, date }) {
+    const p = findProduct(state, productId);
+    const n = requireNumber(qty, 'Quantity', { min: 1, integer: true });
+    if (!WRITE_OFF_REASONS.includes(reason)) throw new Error('Choose a reason for the write-off');
+    if (n > p.stock) throw new Error('Cannot write off ' + n + ' ' + p.name + ' — only ' + p.stock + ' in stock');
+    const w = {
+      id: nextId(state, 'W'),
+      date: date || new Date().toISOString(),
+      productId: p.id,
+      name: p.name,
+      category: p.category,
+      qty: n,
+      unitCost: p.costPrice,
+      value: round2(n * p.costPrice),
+      reason,
+      note: String(note || '').trim(),
+      staff: staff || '',
+    };
+    p.stock -= n;
+    logMovement(state, { productId: p.id, type: 'writeoff', qty: -n, ref: w.id, date: w.date, note: reason + (w.note ? ' — ' + w.note : '') });
+    state.writeOffs.push(w);
+    return w;
+  }
+
+  function writeOffReport(state, { from, to } = {}) {
+    const list = state.writeOffs.filter((w) => inRange(w.date, from, to)).sort((a, b) => (a.date < b.date ? 1 : -1));
+    const byReason = {};
+    const byProduct = {};
+    for (const w of list) {
+      byReason[w.reason] = round2((byReason[w.reason] || 0) + w.value);
+      byProduct[w.name] = round2((byProduct[w.name] || 0) + w.value);
+    }
+    return {
+      list,
+      units: list.reduce((s, w) => s + w.qty, 0),
+      value: round2(list.reduce((s, w) => s + w.value, 0)),
+      byReason,
+      byProduct,
+    };
+  }
+
+  // ---------- expiry tracking ----------
+
+  /** Records an expiry date for stock already on the shelf (e.g. opening stock). Does not change stock. */
+  function addExpiryBatch(state, { productId, qty, expiry, note }) {
+    const p = findProduct(state, productId);
+    const batch = {
+      id: nextId(state, 'B'),
+      productId: p.id,
+      expiry: requireDay(expiry, 'Expiry date'),
+      qty: requireNumber(qty, 'Quantity', { min: 1, integer: true }),
+      source: 'manual',
+      ref: '',
+      note: String(note || '').trim(),
+      date: new Date().toISOString(),
+    };
+    state.batches.push(batch);
+    return batch;
+  }
+
+  function removeExpiryBatch(state, batchId) {
+    const before = state.batches.length;
+    state.batches = state.batches.filter((b) => b.id !== batchId);
+    if (state.batches.length === before) throw new Error('Expiry record not found');
+  }
+
+  /**
+   * Estimates what is left of each dated batch. Assumes stock is rotated
+   * first-expiry-first-out, so the units still on the shelf belong to the
+   * latest-expiring batches; older batches are used up first. Sales, voids,
+   * write-offs and stock takes are therefore all reflected automatically.
+   */
+  function batchBalances(state) {
+    const out = [];
+    for (const p of state.products) {
+      let left = Math.max(p.stock, 0);
+      const batches = state.batches.filter((b) => b.productId === p.id).sort((a, b) => (a.expiry < b.expiry ? 1 : a.expiry > b.expiry ? -1 : 0));
+      for (const b of batches) {
+        const remaining = Math.min(b.qty, left);
+        left -= remaining;
+        out.push({ ...b, product: p, remaining });
+      }
+    }
+    return out;
+  }
+
+  /** Dated stock that has expired or will expire within `withinDays`, soonest first. */
+  function expiryReport(state, { withinDays, today } = {}) {
+    const day = today || localDay(new Date());
+    const window = withinDays ?? state.settings.expiryWarningDays ?? 30;
+    const rows = batchBalances(state)
+      .filter((b) => b.remaining > 0 && b.product.active)
+      .map((b) => {
+        const daysLeft = daysBetween(day, b.expiry);
+        const status = daysLeft < 0 ? 'expired' : daysLeft <= 7 ? 'week' : daysLeft <= window ? 'soon' : 'ok';
+        return { ...b, daysLeft, status, value: round2(b.remaining * b.product.costPrice) };
+      })
+      .filter((b) => b.status !== 'ok')
+      .sort((a, b) => a.daysLeft - b.daysLeft);
+    return {
+      rows,
+      expired: rows.filter((r) => r.status === 'expired'),
+      units: rows.reduce((s, r) => s + r.remaining, 0),
+      value: round2(rows.reduce((s, r) => s + r.value, 0)),
+      withinDays: window,
+    };
+  }
+
+  // ---------- restocking ----------
+
+  /**
+   * What needs to be ordered. A product is listed when it is at or below its
+   * reorder level, or when recent sales say it will run out within
+   * `coverDays`. Suggested quantity tops it up to its "order up to" (par)
+   * level, or — if none is set — to twice the reorder level or a week of sales.
+   */
+  function restockList(state, { today, lookbackDays = 14, coverDays = 7 } = {}) {
+    const day = today || localDay(new Date());
+    const start = new Date(day + 'T00:00:00');
+    start.setDate(start.getDate() - (lookbackDays - 1));
+    const sold = salesReport(state, { from: localDay(start), to: day }).products;
+    const rows = [];
+    for (const p of state.products.filter((x) => x.active)) {
+      const qtySold = (sold.find((s) => s.productId === p.id) || { qty: 0 }).qty;
+      const perDay = qtySold / lookbackDays;
+      const daysLeft = perDay > 0 ? Math.floor(p.stock / perDay) : null;
+      const below = p.stock <= p.reorderLevel;
+      const runningOut = daysLeft !== null && daysLeft <= coverDays;
+      if (!below && !runningOut) continue;
+      const target = p.parLevel > 0 ? p.parLevel : Math.max(p.reorderLevel * 2, Math.ceil(perDay * coverDays), p.reorderLevel + 1);
+      const orderQty = Math.max(target - p.stock, 0);
+      rows.push({
+        product: p,
+        status: p.stock <= 0 ? 'out' : below ? 'low' : 'soon',
+        perDay: round2(perDay),
+        daysLeft,
+        target,
+        orderQty,
+        orderValue: round2(orderQty * p.costPrice),
+      });
+    }
+    const rank = { out: 0, low: 1, soon: 2 };
+    rows.sort((a, b) => rank[a.status] - rank[b.status] || (a.daysLeft ?? 1e9) - (b.daysLeft ?? 1e9) || a.product.name.localeCompare(b.product.name));
+    return { rows, orderValue: round2(rows.reduce((s, r) => s + r.orderValue, 0)), lookbackDays, coverDays };
   }
 
   // ---------- reporting ----------
@@ -387,6 +559,8 @@
       sales: data.sales || [],
       deliveries: data.deliveries || [],
       stockTakes: data.stockTakes || [],
+      writeOffs: data.writeOffs || [],
+      batches: data.batches || [],
       movements: data.movements || [],
       seq: data.seq || 1,
       version: SCHEMA_VERSION,
@@ -396,6 +570,7 @@
   return {
     SCHEMA_VERSION,
     PAYMENT_METHODS,
+    WRITE_OFF_REASONS,
     DEFAULT_CATEGORIES,
     createState,
     loadState,
@@ -409,6 +584,12 @@
     voidSale,
     receiveStock,
     recordStockTake,
+    recordWriteOff,
+    writeOffReport,
+    addExpiryBatch,
+    removeExpiryBatch,
+    expiryReport,
+    restockList,
     salesReport,
     stockSummary,
     toCSV,

@@ -136,15 +136,24 @@ tbody tr:hover { background: rgba(255, 255, 255, .02); }
 .pay button.active { border-color: var(--accent); color: var(--accent); }
 .charge { width: 100%; padding: 14px; font-size: 17px; }
 
+/* ---------- stock watch ---------- */
+.tabs .badge:not(:empty) { margin-left: 6px; background: var(--bad); color: #fff; border-radius: 999px; font-size: 11px; padding: 1px 6px; font-weight: 700; }
+.watch-mini { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.watch-mini button { display: grid; gap: 2px; text-align: left; border: 1px solid var(--line); background: var(--panel-2); border-radius: 10px; padding: 10px; cursor: pointer; }
+.watch-mini button:hover { border-color: var(--accent); }
+.watch-mini b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.watch-mini span { color: var(--muted); font-size: 12px; }
+.warn-t { color: var(--warn); }
+
 /* ---------- stock take ---------- */
 .count-input { width: 90px; text-align: right; }
 
 /* ---------- charts ---------- */
 .bars { display: grid; gap: 6px; }
-.bar-row { display: grid; grid-template-columns: 130px 1fr 90px; gap: 10px; align-items: center; font-size: 13px; }
+.bar-row { display: grid; grid-template-columns: 130px 1fr 120px; gap: 10px; align-items: center; font-size: 13px; }
 .bar-row .track { height: 10px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
 .bar-row .fill { height: 100%; background: linear-gradient(90deg, #38bdf8, var(--accent)); border-radius: 999px; }
-.bar-row .amt { text-align: right; font-variant-numeric: tabular-nums; }
+.bar-row .amt { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .bar-row .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hours { display: grid; grid-template-columns: repeat(24, 1fr); gap: 3px; align-items: end; height: 120px; }
 .hours div { background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; opacity: .85; }

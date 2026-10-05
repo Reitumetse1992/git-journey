@@ -132,3 +132,81 @@ test('backups round-trip and invalid files are rejected', () => {
 test('CSV escapes commas and quotes', () => {
   assert.equal(core.toCSV(['a', 'b'], [['x,y', 'say "hi"']]), 'a,b\n"x,y","say ""hi"""');
 });
+
+test('write-offs remove stock, record value and refuse more than is on hand', () => {
+  const { s, castle } = setup();
+  assert.throws(() => core.recordWriteOff(s, { productId: castle.id, qty: 2, reason: 'Because' }), /reason/);
+  assert.throws(() => core.recordWriteOff(s, { productId: castle.id, qty: 49, reason: 'Broken' }), /only 48/);
+  const w = core.recordWriteOff(s, { productId: castle.id, qty: 3, reason: 'Broken', note: 'Dropped crate', staff: 'Thabo' });
+  assert.equal(castle.stock, 45);
+  assert.equal(w.value, 36);
+  assert.equal(s.movements.at(-1).type, 'writeoff');
+  core.recordWriteOff(s, { productId: castle.id, qty: 1, reason: 'Spilled' });
+  const r = core.writeOffReport(s);
+  assert.equal(r.units, 4);
+  assert.equal(r.value, 48);
+  assert.deepEqual(r.byReason, { Broken: 36, Spilled: 12 });
+});
+
+test('deliveries with expiry dates create batches; expiry report flags them', () => {
+  const s = core.createState();
+  const cider = core.addProduct(s, { name: 'Savanna', costPrice: 17.5, sellPrice: 35 });
+  core.receiveStock(s, { items: [{ productId: cider.id, qty: 24, expiry: '2026-10-10' }] });
+  core.receiveStock(s, { items: [{ productId: cider.id, qty: 24, expiry: '2027-03-01' }] });
+  assert.equal(s.batches.length, 2);
+  assert.throws(() => core.receiveStock(s, { items: [{ productId: cider.id, qty: 1, expiry: 'soon' }] }), /valid date/);
+
+  let r = core.expiryReport(s, { today: '2026-10-05', withinDays: 30 });
+  assert.equal(r.rows.length, 1);
+  assert.equal(r.rows[0].remaining, 24);
+  assert.equal(r.rows[0].daysLeft, 5);
+  assert.equal(r.rows[0].status, 'week');
+  assert.equal(r.value, 420);
+
+  // Selling 30 uses the older batch first, leaving 18 of the new one and none of the old.
+  core.recordSale(s, { items: [{ productId: cider.id, qty: 30 }], payment: 'Cash' });
+  r = core.expiryReport(s, { today: '2026-10-05', withinDays: 30 });
+  assert.equal(r.rows.length, 0);
+
+  r = core.expiryReport(s, { today: '2027-03-05', withinDays: 30 });
+  assert.equal(r.rows[0].status, 'expired');
+  assert.equal(r.rows[0].remaining, 18);
+});
+
+test('manual expiry dates and partial use of the oldest batch', () => {
+  const { s, jameson } = setup();
+  const b = core.addExpiryBatch(s, { productId: jameson.id, qty: 4, expiry: '2026-10-20' });
+  core.addExpiryBatch(s, { productId: jameson.id, qty: 4, expiry: '2026-12-31' });
+  assert.equal(jameson.stock, 10, 'adding an expiry date does not change stock');
+  core.recordWriteOff(s, { productId: jameson.id, qty: 4, reason: 'Expired' });
+  const r = core.expiryReport(s, { today: '2026-10-05', withinDays: 30 });
+  assert.equal(r.rows[0].remaining, 2, '6 left: 4 belong to the later batch, 2 to the earlier one');
+  core.removeExpiryBatch(s, b.id);
+  assert.equal(core.expiryReport(s, { today: '2026-10-05', withinDays: 30 }).rows.length, 0);
+});
+
+test('restock list covers low stock and fast sellers with suggested quantities', () => {
+  const s = core.createState();
+  const low = core.addProduct(s, { name: 'Corona', costPrice: 20, sellPrice: 42, stock: 10, reorderLevel: 12, parLevel: 48 });
+  const fast = core.addProduct(s, { name: 'Castle Lite', costPrice: 14, sellPrice: 30, stock: 100, reorderLevel: 10 });
+  const fine = core.addProduct(s, { name: 'Peanuts', costPrice: 7, sellPrice: 18, stock: 20, reorderLevel: 6 });
+  const out = core.addProduct(s, { name: 'Red Bull', costPrice: 18, sellPrice: 40, stock: 0, reorderLevel: 6 });
+  // Castle Lite sells 84 over 14 days = 6/day; 16 left is above its reorder level but lasts ~2 days.
+  for (let d = 0; d < 14; d++) {
+    const day = new Date(2026, 9, 5 - d, 20);
+    core.recordSale(s, { items: [{ productId: fast.id, qty: 6 }], payment: 'Cash', date: day.toISOString() });
+  }
+  const r = core.restockList(s, { today: '2026-10-05' });
+  const names = r.rows.map((x) => x.product.name);
+  assert.deepEqual(names, ['Red Bull', 'Corona', 'Castle Lite']);
+  assert.ok(!names.includes(fine.name));
+  const corona = r.rows.find((x) => x.product.id === low.id);
+  assert.equal(corona.orderQty, 38, 'tops up to par level');
+  assert.equal(corona.orderValue, 760);
+  const castle = r.rows.find((x) => x.product.id === fast.id);
+  assert.equal(castle.status, 'soon');
+  assert.equal(castle.perDay, 6);
+  assert.equal(castle.daysLeft, 2);
+  assert.equal(castle.orderQty, 42 - 16, 'no par level: tops up to a week of sales');
+  assert.equal(r.rows.find((x) => x.product.id === out.id).orderQty, 12);
+});

@@ -21,9 +21,11 @@ connection needed — open `index.html` on the bar laptop or tablet and start.
 | **Sell** | Tap drinks to build an order, choose Cash / Card / EFT / Tab, and record the sale. Stock goes down automatically and you can't sell what isn't there. |
 | **Products** | Keep the price list: name, category, unit (bottle, tot, glass…), cost price, selling price, reorder level. Shows margin and stock status. |
 | **Stock → Stock take** | Enter the physical count for each item. The system shows expected vs counted and the rand value of any variance (shortage), then sets stock to the count. |
-| **Stock → Deliveries** | Record stock coming in from suppliers, with invoice number and unit cost. Cost prices update from the latest delivery. |
-| **Stock → Adjust** | Write off breakages, spillage, expired stock, staff drinks or complimentary drinks — always with a reason. |
+| **Stock → Deliveries** | Record stock coming in from suppliers, with invoice number, unit cost and an optional best-before date. Cost prices update from the latest delivery. |
+| **Stock → Record damage** | Write off broken, spilled, damaged, spoiled or expired stock. It is removed from stock and listed in Stock Watch with its cost. |
+| **Stock → Adjust** | Other corrections such as staff drinks, complimentary drinks or found stock — always with a reason. |
 | **Stock → Movement log** | Audit trail of every change to every product: sales, voids, deliveries, adjustments and count variances, with running balance. |
+| **Stock Watch** | One place for problems: **Needs restocking** (out of stock, below reorder level, or selling fast enough to run out within a week, with a suggested order quantity and cost — download or print it as an order list), **Damaged stock** (everything broken, spilled, spoiled or expired, with reason, who recorded it and what it cost), and **Expiring soon** (stock past or near its best-before date, with one-click write-off). The tab shows a red count when something needs attention. |
 | **Sales** | All transactions for any date range. Open a sale to see its items or void it (a reason is required and the stock is returned). |
 | **Reports** | Revenue, cost of sales, gross profit and margin; breakdowns by category, payment method, staff member, hour and day; product performance; stock variance. Export to CSV or print. |
 | **Settings** | Bar details, staff, categories, backup / restore, sample data, erase. |
@@ -33,6 +35,9 @@ connection needed — open `index.html` on the bar laptop or tablet and start.
 - **Opening:** pick who is on shift.
 - **During service:** record every sale on the **Sell** screen.
 - **Deliveries:** record them as soon as they are checked in.
+- **Breakages and spills:** record them straight away with **Record damage**.
+- **Before ordering:** open **Stock Watch → Needs restocking** and download the order list.
+- **Weekly:** check **Stock Watch → Expiring soon**; move short-dated stock to the front or write it off.
 - **Closing (or weekly):** do a **Stock take**, then check **Reports → Stock variance**.
   A big negative variance means stock is going missing — check the movement log for that product.
 - **End of day:** **Settings → Download backup** and keep the file somewhere safe (email, USB, cloud drive).
@@ -60,6 +65,7 @@ Key rules enforced by `core.js`:
 - A sale is refused if any item would go below zero stock; nothing is changed when a sale fails.
 - Voids, adjustments and stock takes are logged with who, when and why — nothing is silently deleted.
 - Products that have history are archived rather than deleted, so old reports stay correct.
+- Expiry tracking assumes stock is rotated first-expiry-first-out: units left on the shelf are counted against the latest best-before dates, so sales, damage and stock takes update the expiry list automatically.
 
 ### Running the tests
 
